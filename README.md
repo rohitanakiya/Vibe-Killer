@@ -247,7 +247,13 @@ the same issue during merging.
 go install github.com/rohitanakiya/Vibe-Killer/cmd/vibekiller@latest
 ```
 
-Go 1.22+. The rule pack is embedded in the binary, so a scan needs no checkout.
+Go 1.26+. That floor comes from the dependencies, not from this code:
+`modernc.org/sqlite` (the pure-Go SQLite behind run history, chosen so the
+binary needs no cgo), `golang.org/x/time` and `golang.org/x/sys` all declare
+`go 1.26.0` themselves. Supporting older toolchains means pinning those back,
+which is a change worth making deliberately rather than discovering.
+
+The rule pack is embedded in the binary, so a scan needs no checkout.
 
 From a clone, build the command rather than the module root:
 

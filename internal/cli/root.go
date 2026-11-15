@@ -18,8 +18,13 @@ import (
 	"github.com/rohitanakiya/Vibe-Killer/internal/engine"
 )
 
-// Version is overridden at build time with -ldflags.
-var Version = "0.4.0-dev"
+// Version is overridden at build time with -ldflags, but the value here is
+// not a placeholder: `go install <module>@vX.Y.Z` passes no ldflags, so for
+// anyone who installs rather than builds, this constant IS the reported
+// version. It is also stamped into every findings.json, which is what lets a
+// report be traced back to the code that produced it -- so it has to match
+// the tag, and it has to be bumped in the commit the tag points at.
+var Version = "0.1.0"
 
 // Exit codes. These are the CLI's contract with a CI pipeline, so they are
 // deliberately few and stable.
