@@ -1,0 +1,178 @@
+# Continuous integration for Vibe Killer.
+#
+# The suite's central claim is that every check is tested twice -- once against
+# a fixture that has the weakness and once against one that does not -- and
+# that the rule pack is *completely silent* on the patched fixtures. That claim
+# is only worth anything if it is re-checked on every push, which is what this
+# workflow is for.
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+# Read-only. Nothing here publishes, comments or writes to the repository, and
+# a token that cannot write is the cheapest way to keep it that way.
+permissions:
+  contents: read
+
+# A second push to the same branch makes the first one's result irrelevant.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      # Without this, the first OS to fail cancels the others and hides
+      # whether the failure is platform-specific -- which is the single most
+      # useful thing to know about a failure here.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          # The Go floor lives in go.mod and is inherited from the
+          # dependencies, so reading it from there keeps one source of truth.
+          # Duplicating the version as a literal here means the two drift and
+          # CI starts passing on a toolchain the module does not claim.
+          go-version-file: go.mod
+          check-latest: true
+
+      # This step is the regression test for a real incident: a .gitignore
+      # pattern without a leading slash matched rules/vibekiller/ as well as
+      # the build output, so the rule pack was silently excluded from the
+      # repository. Everything still worked locally, because the files were
+      # right there on disk -- only a clone failed. `go:embed vibekiller/*.yaml`
+      # is a *build-time* error when nothing matches, and CI builds from the
+      # checkout rather than from a working tree, so this catches that class of
+      # mistake at the only place it is visible.
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      # Windows is in the matrix deliberately, not for completeness. Path
+      # handling here is genuinely platform-dependent -- filepath.IsAbs treats
+      # a POSIX-style "/repo/src/app.js" as relative on Windows because it
+      # carries no drive letter -- and that has already produced one bug. The
+      # scanners report paths in whatever form the wrapped tool emits, so the
+      # normalizing code has to hold on all three.
+      #
+      # Semgrep is not installed in this job, so the rule-pack behaviour test
+      # skips itself (see internal/checks/staticchecks/fixtures_test.go) and
+      # the run stays quick. The rulepack job below is where it actually runs.
+      #
+      # The explicit timeout is above Go's 10-minute default per test binary:
+      # the endpoint checks start in-process servers and take over a minute
+      # locally, and a hosted runner is slower than a laptop.
+      - name: Test
+        run: go test -timeout 15m ./...
+
+  race:
+    name: race detector (advisory)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Advisory until it has been green once, and this line is the only thing
+    # to change after that. The reason is specific rather than cautious: the
+    # race detector needs cgo and a C toolchain, the machine this workflow was
+    # written on has neither (CGO_ENABLED=0, no gcc), so unlike every other job
+    # here it was never run before being committed. A job with no verified
+    # baseline should report, not gate -- if it finds something, that is a real
+    # bug worth a real fix, not a reason to block an unrelated push.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      # The checks run concurrently against in-process servers, and the engine
+      # merges findings from several scanners into one report, so the
+      # interesting races are in code this suite already exercises. Linux only:
+      # -race needs cgo and a C toolchain, which is least fuss here, and a data
+      # race is not usually platform-specific anyway.
+      - name: Test with -race
+        run: go test -race -timeout 25m ./...
+
+  rulepack:
+    name: rule pack (real semgrep)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      # Pinned on purpose. The pack asserts both directions -- each rule fires
+      # on its vulnerable fixture and the whole pack is silent on the patched
+      # one -- and the silent half is sensitive to the engine, not just to the
+      # rules. With a floating version, an upstream Semgrep change turns into a
+      # red build on a commit that touched nothing, and the failure points at
+      # the wrong thing. Bumping this is then a deliberate commit that can be
+      # reviewed on its own.
+      - name: Install semgrep
+        run: pip install --disable-pip-version-check semgrep==1.185.0
+
+      - name: Versions
+        run: |
+          semgrep --version
+          go version
+
+      # Only the packages that use semgrep. The rest already ran in the matrix
+      # job, and this one is the slow half -- the fixture sweep drives the real
+      # engine over two unrelated stacks and takes minutes rather than seconds.
+      # -v so that a failure names the rule and fixture that disagreed, which
+      # is the whole diagnostic value of this job.
+      - name: Rule pack behaviour
+        run: go test -v -timeout 40m ./internal/checks/staticchecks/... ./rules/...
+
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      # gofmt -l exits 0 whether or not it found anything and just prints the
+      # offending files, so the exit code has to be built by hand.
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::These files are not gofmt'd:"
+            echo "$unformatted"
+            gofmt -d .
+            exit 1
+          fi
+          echo "gofmt clean"
+
+      # Exits non-zero when go.mod or go.sum would change, which catches the
+      # specific drift that bit this module once already: a dependency that is
+      # imported directly but still marked // indirect.
+      - name: go.mod is tidy
+        run: go mod tidy -diff
