@@ -1,0 +1,408 @@
+# Vibe Killer first-party rule pack: injection.
+#
+# These rules detect the construction of a query or command from untrusted
+# input. They report the dangerous construction and, where Semgrep can trace
+# it, the path the input took to get there.
+#
+# Nothing here produces an exploit. Detection is a static judgement about how
+# a string was built, and the dynamic half of Vibe Killer confirms such a
+# finding with a safe differential probe rather than by running a payload.
+
+rules:
+  - id: sql-built-by-string-concatenation
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      A SQL statement is assembled from a request value by concatenation or
+      template interpolation. The value becomes part of the statement's
+      syntax, so a caller controls the query rather than just its parameters.
+    metadata:
+      category: security
+      cwe:
+        - "CWE-89: Improper Neutralization of Special Elements used in an SQL Command"
+      owasp:
+        - "A03:2021 - Injection"
+      confidence: HIGH
+      references:
+        - https://cheatsheetseries.owasp.org/cheatsheets/Query_Parameterization_Cheat_Sheet.html
+      vibekiller:
+        rule_id: injection.sql-string-built-from-input
+        category: injection
+        severity: critical
+        confidence: likely
+        fixable_by_giver: true
+        root_cause_hint: >-
+          The query is built as a string, so there is no boundary between the
+          statement and the data in it.
+        guidance: >-
+          Use a parameterized query and pass the value as a bound parameter,
+          for example db.query("SELECT * FROM orders WHERE id = $1", [id]).
+          Parameterizing is what separates statement from data; escaping by
+          hand does not.
+        dynamic_rule: injection.sql-differential
+    mode: taint
+    pattern-sources:
+      - pattern: '$REQ.params'
+      - pattern: '$REQ.query'
+      - pattern: '$REQ.body'
+      - pattern: '$REQ.headers'
+      - pattern: '$REQ.cookies'
+    pattern-sanitizers:
+      # A value that has been through an integer parse or a strict allowlist is
+      # no longer able to carry syntax.
+      - pattern: 'parseInt(...)'
+      - pattern: 'Number(...)'
+      - pattern: '$X.escape(...)'
+      - pattern: '$X.escapeId(...)'
+    # focus-metavariable narrows the sink to the statement argument itself, so
+    # a bound parameter passed alongside it is not treated as reaching the
+    # sink. Without it, `db.query('... WHERE a = ?', [userInput], cb)` — the
+    # correct, parameterized form — is reported, because the tainted value is
+    # an argument of the call even though it never becomes part of the
+    # statement.
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: '$DB.query($SQL, ...)'
+              - pattern: '$DB.execute($SQL, ...)'
+              - pattern: '$DB.raw($SQL, ...)'
+              - pattern: 'sequelize.query($SQL, ...)'
+              - pattern: 'knex.raw($SQL, ...)'
+          - focus-metavariable: $SQL
+      - patterns:
+          - pattern: '$DB.$M.findAll({ where: $WHERE })'
+          - focus-metavariable: $WHERE
+
+  - id: sql-built-by-string-formatting-python
+    languages: [python]
+    severity: ERROR
+    message: >-
+      A SQL statement is built with string formatting from a request value.
+      The value becomes part of the statement, so a caller controls the query.
+    metadata:
+      category: security
+      cwe:
+        - "CWE-89: Improper Neutralization of Special Elements used in an SQL Command"
+      owasp:
+        - "A03:2021 - Injection"
+      confidence: HIGH
+      vibekiller:
+        rule_id: injection.sql-string-built-from-input
+        category: injection
+        severity: critical
+        confidence: likely
+        fixable_by_giver: true
+        root_cause_hint: >-
+          The query is assembled with f-strings, % or .format(), so the value
+          is interpolated into the statement's syntax.
+        guidance: >-
+          Pass the value as a bound parameter instead, for example
+          cursor.execute("SELECT * FROM orders WHERE id = %s", (order_id,)),
+          or use the ORM's filter API. Note that the comma matters: passing a
+          tuple is parameterization, while % formatting is not.
+        dynamic_rule: injection.sql-differential
+    patterns:
+      - pattern-either:
+          - pattern: '$CUR.execute(f"...", ...)'
+          - pattern: '$CUR.execute("..." % ..., ...)'
+          - pattern: '$CUR.execute("...".format(...), ...)'
+          - pattern: '$CUR.execute("..." + $X, ...)'
+          - pattern: '$CUR.executemany(f"...", ...)'
+          - pattern: '$DB.session.execute(f"...", ...)'
+          - pattern: 'text(f"...")'
+          - pattern: '$MODEL.objects.raw(f"...")'
+          - pattern: '$MODEL.objects.extra(where=[f"..."])'
+      - pattern-regex: >-
+          (?s)(request\.(args|form|json|values|data|cookies|headers)|current_user|kwargs\[|\b(id|user_id|order_id|name|email|query|search|q)\b)
+
+  - id: nosql-query-built-from-request-object
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      A request value is used directly as a query operand. If the caller sends
+      an object instead of a scalar, for example {"$gt": ""} or {"$ne": null},
+      it is interpreted as a query operator and the comparison no longer means
+      what the code reads as.
+    metadata:
+      category: security
+      cwe:
+        - "CWE-943: Improper Neutralization of Special Elements in Data Query Logic"
+      owasp:
+        - "A03:2021 - Injection"
+      confidence: MEDIUM
+      vibekiller:
+        rule_id: injection.nosql-operator-injection
+        category: injection
+        severity: high
+        confidence: likely
+        fixable_by_giver: true
+        root_cause_hint: >-
+          A JSON body can hold an object where the code assumes a scalar, and
+          the query layer treats that object as operators.
+        guidance: >-
+          Coerce and validate the value to the type you expect before querying,
+          for example String(req.body.email), and reject non-scalar input at
+          the edge with a schema validator.
+        dynamic_rule: injection.nosql-operator-differential
+    pattern-either:
+      - pattern: '$M.findOne({ $FIELD: $REQ.body.$ANY })'
+      - pattern: '$M.findOne({ $FIELD: $REQ.query.$ANY })'
+      - pattern: '$M.find({ $FIELD: $REQ.body.$ANY })'
+      - pattern: '$M.find({ $FIELD: $REQ.query.$ANY })'
+      - pattern: '$M.findOne($REQ.body)'
+      - pattern: '$M.find($REQ.body)'
+      - pattern: '$M.deleteOne($REQ.body)'
+      - pattern: '$M.updateOne($REQ.body, ...)'
+
+  - id: shell-command-built-from-input
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      A shell command is built from a request value. The shell interprets
+      metacharacters, so a caller can append their own command to this one.
+    metadata:
+      category: security
+      cwe:
+        - "CWE-78: Improper Neutralization of Special Elements used in an OS Command"
+      owasp:
+        - "A03:2021 - Injection"
+      confidence: HIGH
+      vibekiller:
+        rule_id: injection.command-built-from-input
+        category: injection
+        severity: critical
+        confidence: likely
+        fixable_by_giver: true
+        root_cause_hint: >-
+          The command is passed to a shell as one string, so the request value
+          is parsed as syntax rather than treated as an argument.
+        guidance: >-
+          Use the argument-array form that does not involve a shell, for
+          example execFile("convert", [inputPath, outputPath]), and validate
+          the value against an allowlist. There is no reliable way to escape
+          untrusted input into a shell string.
+    mode: taint
+    pattern-sources:
+      - pattern: '$REQ.params'
+      - pattern: '$REQ.query'
+      - pattern: '$REQ.body'
+    pattern-sanitizers:
+      - pattern: '$X.quote(...)'
+      - pattern: 'shellEscape(...)'
+    pattern-sinks:
+      - pattern-either:
+          - pattern: 'child_process.exec(...)'
+          - pattern: 'child_process.execSync(...)'
+          - pattern: 'exec(...)'
+          - pattern: 'execSync(...)'
+          - pattern: '$CP.exec(...)'
+          - pattern: '$CP.execSync(...)'
+          - pattern: '$CP.spawn($CMD, ..., { shell: true })'
+
+  - id: shell-command-built-from-input-python
+    languages: [python]
+    severity: ERROR
+    message: >-
+      A shell command is built from a request value. The shell interprets
+      metacharacters, so a caller can append their own command.
+    metadata:
+      category: security
+      cwe:
+        - "CWE-78: Improper Neutralization of Special Elements used in an OS Command"
+      owasp:
+        - "A03:2021 - Injection"
+      confidence: HIGH
+      vibekiller:
+        rule_id: injection.command-built-from-input
+        category: injection
+        severity: critical
+        confidence: likely
+        fixable_by_giver: true
+        root_cause_hint: >-
+          shell=True hands the assembled string to a shell, which parses the
+          request value as syntax.
+        guidance: >-
+          Drop shell=True and pass a list of arguments, for example
+          subprocess.run(["convert", src, dst], check=True), and validate the
+          value against an allowlist.
+    # Taint mode rather than a sink pattern paired with a regex. A regex
+    # inside `patterns` is evaluated against the matched node's own text, not
+    # the file, so a rule that looks for the sink on one line and the request
+    # value on another never fires. Tracing the flow is both correct and what
+    # the finding should report anyway.
+    mode: taint
+    pattern-sources:
+      - pattern: 'request.args'
+      - pattern: 'request.form'
+      - pattern: 'request.json'
+      - pattern: 'request.values'
+      - pattern: 'request.data'
+      - pattern: 'request.headers'
+      - pattern: 'request.cookies'
+      - pattern: 'request.get_json(...)'
+    pattern-sanitizers:
+      - pattern: 'shlex.quote(...)'
+      - pattern: 'int(...)'
+    pattern-sinks:
+      - pattern-either:
+          - pattern: 'subprocess.run(..., shell=True, ...)'
+          - pattern: 'subprocess.call(..., shell=True, ...)'
+          - pattern: 'subprocess.check_call(..., shell=True, ...)'
+          - pattern: 'subprocess.check_output(..., shell=True, ...)'
+          - pattern: 'subprocess.Popen(..., shell=True, ...)'
+          - pattern: 'os.system(...)'
+          - pattern: 'os.popen(...)'
+
+  - id: eval-of-request-data
+    languages: [javascript, typescript, python]
+    severity: ERROR
+    message: >-
+      Request data reaches a dynamic evaluation sink. This gives the caller
+      code execution inside the application process, which is the broadest
+      possible outcome of an injection.
+    metadata:
+      category: security
+      cwe:
+        - "CWE-94: Improper Control of Generation of Code"
+      owasp:
+        - "A03:2021 - Injection"
+      confidence: HIGH
+      vibekiller:
+        rule_id: injection.code-evaluation-of-input
+        category: injection
+        severity: critical
+        confidence: likely
+        fixable_by_giver: true
+        root_cause_hint: >-
+          Input is being interpreted as code, usually as a shortcut for
+          parsing or for a small expression language.
+        guidance: >-
+          Parse the value instead of evaluating it: JSON.parse or json.loads
+          for data, and an explicit parser or lookup table for an expression.
+          No amount of filtering makes evaluation of untrusted input safe.
+    mode: taint
+    pattern-sources:
+      - pattern: '$REQ.params'
+      - pattern: '$REQ.query'
+      - pattern: '$REQ.body'
+      - pattern: 'request.args'
+      - pattern: 'request.form'
+      - pattern: 'request.json'
+    pattern-sinks:
+      - pattern-either:
+          - pattern: 'eval(...)'
+          - pattern: 'exec(...)'
+          - pattern: 'new Function(...)'
+          - pattern: 'setTimeout($CODE, ...)'
+          - pattern: 'vm.runInThisContext(...)'
+          - pattern: 'vm.runInNewContext(...)'
+          - pattern: 'pickle.loads(...)'
+          - pattern: 'yaml.load(...)'
+
+  - id: path-built-from-request-value
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      A filesystem path is built from a request value. Unless the result is
+      confined to an intended directory, a caller can use ../ segments to
+      reach files outside it.
+    metadata:
+      category: security
+      cwe:
+        - "CWE-22: Improper Limitation of a Pathname to a Restricted Directory"
+      owasp:
+        - "A01:2021 - Broken Access Control"
+      confidence: MEDIUM
+      vibekiller:
+        rule_id: traversal.path-built-from-input
+        category: broken-access-control
+        severity: high
+        confidence: likely
+        fixable_by_giver: true
+        root_cause_hint: >-
+          The path is joined without being resolved and then checked against
+          the directory it is supposed to stay inside.
+        guidance: >-
+          Resolve the joined path and verify it is still inside the intended
+          root before opening it, for example with path.resolve followed by a
+          prefix check, or take a database key instead of a filename.
+          Stripping "../" is not sufficient, because encodings and symlinks
+          reintroduce it.
+        dynamic_rule: traversal.path-escape
+    mode: taint
+    pattern-sources:
+      - pattern: '$REQ.params'
+      - pattern: '$REQ.query'
+      - pattern: '$REQ.body'
+    pattern-sanitizers:
+      - pattern: 'path.basename(...)'
+      - pattern: '$X.sanitizePath(...)'
+      # path.resolve is treated as a sanitizer, which is a deliberate trade.
+      #
+      # The correct idiom is resolve-then-check: resolve the joined path, then
+      # confirm it still sits under the intended root. The check is an `if`
+      # guard, and taint analysis cannot see guards, so a rule that insisted on
+      # seeing it would report every correct handler. Treating resolve as the
+      # marker keeps the rule silent on code that follows the idiom, at the
+      # cost of missing a resolve with no check after it. The dynamic
+      # traversal.path-escape check is what settles that case, by trying it.
+      - pattern: 'path.resolve(...)'
+    pattern-sinks:
+      - pattern-either:
+          - pattern: 'fs.readFile(...)'
+          - pattern: 'fs.readFileSync(...)'
+          - pattern: 'fs.createReadStream(...)'
+          - pattern: 'fs.writeFile(...)'
+          - pattern: 'fs.writeFileSync(...)'
+          - pattern: 'fs.unlink(...)'
+          - pattern: 'fs.promises.$F(...)'
+          - pattern: '$RES.sendFile(...)'
+          - pattern: '$RES.download(...)'
+
+  - id: path-built-from-request-value-python
+    languages: [python]
+    severity: ERROR
+    message: >-
+      A filesystem path is built from a request value without being confined
+      to an intended directory, so a caller can traverse out of it.
+    metadata:
+      category: security
+      cwe:
+        - "CWE-22: Improper Limitation of a Pathname to a Restricted Directory"
+      owasp:
+        - "A01:2021 - Broken Access Control"
+      confidence: MEDIUM
+      vibekiller:
+        rule_id: traversal.path-built-from-input
+        category: broken-access-control
+        severity: high
+        confidence: likely
+        fixable_by_giver: true
+        root_cause_hint: >-
+          os.path.join with an absolute or dot-dot segment discards the base
+          directory entirely.
+        guidance: >-
+          Resolve the path and confirm it is still under the intended root, for
+          example with Path(root).joinpath(name).resolve() followed by an
+          is_relative_to(root) check, or use send_from_directory, which
+          performs that check for you.
+        dynamic_rule: traversal.path-escape
+    # Scoped to a route handler rather than paired with a regex, because a
+    # Flask path parameter arrives as a function argument, not as request.*,
+    # so there is no request value on the line to match and no taint source to
+    # trace from. Inside a route handler, opening a path that is not a literal
+    # is the pattern worth reporting.
+    patterns:
+      - pattern-inside: |
+          @$APP.$ROUTE(...)
+          def $VIEW(...):
+              ...
+      - pattern-either:
+          - pattern: 'open(os.path.join(...), ...)'
+          - patterns:
+              - pattern: 'open($P, ...)'
+              - pattern-not: 'open("...", ...)'
+          - pattern: 'send_file(os.path.join(...), ...)'
+          - pattern: 'Path(...).read_text(...)'
+          - pattern: 'Path(...).read_bytes(...)'
+      - pattern-not: 'send_from_directory(...)'

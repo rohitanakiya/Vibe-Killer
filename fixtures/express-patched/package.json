@@ -1,0 +1,15 @@
+{
+  "name": "vk-fixture-express-patched",
+  "version": "1.0.0",
+  "private": true,
+  "description": "The express-vulnerable fixture with every weakness fixed. Used to prove Vibe Killer's checks stay silent on correct code.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "4.21.2",
+    "jsonwebtoken": "9.0.2",
+    "lodash": "4.17.21"
+  }
+}

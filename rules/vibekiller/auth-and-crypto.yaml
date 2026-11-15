@@ -1,0 +1,338 @@
+# Vibe Killer first-party rule pack: authentication, tokens and cryptography.
+#
+# The recurring pattern here is a token that is decoded rather than verified.
+# Decoding a JWT reads attacker-supplied JSON; verifying it checks a signature.
+# The two calls look almost identical in every library, produce the same object
+# on the happy path, and are routinely swapped in generated code, which turns
+# the whole token into client-controlled input.
+
+rules:
+  - id: jwt-decoded-without-verification
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      This reads a JWT's claims without verifying its signature. The payload is
+      whatever the caller put there, so any identity or role in it is
+      self-asserted. Decoding is not authentication.
+    metadata:
+      category: security
+      cwe:
+        - "CWE-347: Improper Verification of Cryptographic Signature"
+      owasp:
+        - "A07:2021 - Identification and Authentication Failures"
+      confidence: HIGH
+      references:
+        - https://cheatsheetseries.owasp.org/cheatsheets/JSON_Web_Token_for_Java_Cheat_Sheet.html
+      vibekiller:
+        rule_id: auth.jwt-not-verified
+        category: identification-and-authentication-failure
+        severity: critical
+        confidence: likely
+        fixable_by_giver: true
+        root_cause_hint: >-
+          jwt.decode was used where jwt.verify was meant; the two return the
+          same shape, so the mistake is invisible at the call site.
+        guidance: >-
+          Use jwt.verify with the signing key and an explicit algorithms list,
+          and treat a thrown error as a rejected request. Reserve jwt.decode
+          for inspecting a token you have already verified.
+        dynamic_rule: auth.jwt-forged-claim
+    pattern-either:
+      - pattern: 'jwt.decode($TOKEN)'
+      - pattern: 'jwt.decode($TOKEN, { ... })'
+      - pattern: '$JWT.decode($TOKEN)'
+      - pattern: 'jsonwebtoken.decode(...)'
+      - pattern: 'jwt.verify($TOKEN, $KEY, { ..., ignoreExpiration: true, ... })'
+
+  - id: jwt-decoded-without-verification-python
+    languages: [python]
+    severity: ERROR
+    message: >-
+      This decodes a JWT without verifying its signature, so the claims are
+      client-controlled and any identity in them is self-asserted.
+    metadata:
+      category: security
+      cwe:
+        - "CWE-347: Improper Verification of Cryptographic Signature"
+      owasp:
+        - "A07:2021 - Identification and Authentication Failures"
+      confidence: HIGH
+      vibekiller:
+        rule_id: auth.jwt-not-verified
+        category: identification-and-authentication-failure
+        severity: critical
+        confidence: likely
+        fixable_by_giver: true
+        root_cause_hint: >-
+          Signature verification was switched off, usually to get past an error
+          during development.
+        guidance: >-
+          Call jwt.decode with the key and algorithms set, and leave
+          verification on. If a test needs an unverified decode, keep that in
+          the test, not in the request path.
+        dynamic_rule: auth.jwt-forged-claim
+    pattern-either:
+      - pattern: 'jwt.decode(..., verify=False, ...)'
+      - pattern: 'jwt.decode(..., options={..., "verify_signature": False, ...}, ...)'
+      - pattern: 'jwt.get_unverified_header(...)'
+      - pattern: 'jwt.decode($TOKEN)'
+
+  - id: jwt-accepts-unsigned-algorithm
+    languages: [javascript, typescript, python]
+    severity: ERROR
+    message: >-
+      The accepted algorithm list includes "none", which means a token with no
+      signature at all is treated as valid. A caller can mint any claims they
+      like.
+    metadata:
+      category: security
+      cwe:
+        - "CWE-347: Improper Verification of Cryptographic Signature"
+      owasp:
+        - "A07:2021 - Identification and Authentication Failures"
+      confidence: HIGH
+      vibekiller:
+        rule_id: auth.jwt-unsigned-algorithm-accepted
+        category: identification-and-authentication-failure
+        severity: critical
+        confidence: likely
+        fixable_by_giver: true
+        root_cause_hint: >-
+          The algorithm list was widened to make a token parse, which disabled
+          the signature check entirely.
+        guidance: >-
+          Pin the algorithms list to exactly the one you sign with, for example
+          algorithms: ["RS256"], and never include "none". Accepting a list
+          that mixes symmetric and asymmetric algorithms is also unsafe,
+          because the public key can then be used as an HMAC secret.
+    pattern-regex: >-
+      (?i)algorithms?\s*[:=]\s*[\[\(]?\s*['"]?none['"]?
+
+  - id: jwt-signed-with-hardcoded-or-weak-secret
+    languages: [javascript, typescript, python]
+    severity: ERROR
+    message: >-
+      A token is signed with a secret written into the source, or with an
+      obvious placeholder. Anyone who can read the repository can mint valid
+      tokens for any user.
+    metadata:
+      category: security
+      cwe:
+        - "CWE-798: Use of Hard-coded Credentials"
+      owasp:
+        - "A02:2021 - Cryptographic Failures"
+      confidence: MEDIUM
+      vibekiller:
+        rule_id: auth.jwt-weak-signing-secret
+        category: identification-and-authentication-failure
+        severity: critical
+        confidence: likely
+        fixable_by_giver: false
+        human_required_reason: >-
+          the signing key is already disclosed, so it has to be replaced and
+          every token issued under it invalidated; that is an operational
+          decision, not a code edit
+        root_cause_hint: >-
+          A development placeholder secret was never replaced with one loaded
+          from the environment.
+        guidance: >-
+          Generate a strong random key, load it from the environment or a
+          secret manager, and rotate it. Rotating invalidates existing tokens,
+          so plan for sessions to end when you deploy the change.
+    patterns:
+      - pattern-either:
+          - pattern: 'jwt.sign($PAYLOAD, "...", ...)'
+          - pattern: 'jwt.verify($TOKEN, "...", ...)'
+          - pattern: 'jwt.encode($PAYLOAD, "...", ...)'
+          - pattern: 'jwt.decode($TOKEN, "...", ...)'
+      - pattern-regex: >-
+          (?i)['"](secret|secretkey|secret_key|mysecret|changeme|change-me|password|dev|development|test|key|jwt|token|abc123|123456|supersecret|your-secret-key|s3cr3t)[a-z0-9_-]{0,12}['"]
+
+  - id: token-expiry-not-set
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: >-
+      This token is signed with no expiry. It stays valid forever, so a token
+      that leaks once cannot be timed out, only revoked by changing the signing
+      key for everyone.
+    metadata:
+      category: security
+      cwe:
+        - "CWE-613: Insufficient Session Expiration"
+      owasp:
+        - "A07:2021 - Identification and Authentication Failures"
+      confidence: MEDIUM
+      vibekiller:
+        rule_id: auth.token-without-expiry
+        category: identification-and-authentication-failure
+        severity: medium
+        confidence: likely
+        fixable_by_giver: true
+        root_cause_hint: >-
+          The signing call omits expiresIn, so the token has no exp claim for
+          the verifier to enforce.
+        guidance: >-
+          Set a short expiry on access tokens, for example expiresIn "15m",
+          and use a separate refresh token that you can revoke server-side.
+    patterns:
+      - pattern: 'jwt.sign($PAYLOAD, $KEY)'
+      - pattern-not: 'jwt.sign($PAYLOAD, $KEY, { ..., expiresIn: ..., ... })'
+      - pattern-not-regex: '(?s)(exp|expiresIn|expires_in)\s*:'
+
+  - id: password-hashed-with-fast-digest
+    languages: [javascript, typescript, python]
+    severity: ERROR
+    message: >-
+      A password is being hashed with a general-purpose digest. These are built
+      to be fast, which is the opposite of what password storage needs: an
+      attacker with the hash list can try candidates at enormous rates.
+    metadata:
+      category: security
+      cwe:
+        - "CWE-916: Use of Password Hash With Insufficient Computational Effort"
+      owasp:
+        - "A02:2021 - Cryptographic Failures"
+      confidence: MEDIUM
+      vibekiller:
+        rule_id: crypto.password-fast-digest
+        category: cryptographic-failure
+        severity: high
+        confidence: likely
+        fixable_by_giver: true
+        root_cause_hint: >-
+          A hash function was chosen for availability rather than for
+          deliberate slowness and per-password salting.
+        guidance: >-
+          Use a password hashing function with a work factor, such as argon2id,
+          scrypt or bcrypt, through a library that salts each password. Migrate
+          existing hashes by re-hashing on next successful login.
+    patterns:
+      - pattern-either:
+          - pattern: 'crypto.createHash("md5")'
+          - pattern: 'crypto.createHash("sha1")'
+          - pattern: 'crypto.createHash("sha256")'
+          - pattern: 'hashlib.md5(...)'
+          - pattern: 'hashlib.sha1(...)'
+          - pattern: 'hashlib.sha256(...)'
+      - pattern-regex: '(?i)(password|passwd|pwd|secret|credential)'
+
+  - id: secret-compared-with-equality
+    languages: [javascript, typescript, python]
+    severity: WARNING
+    message: >-
+      A secret is compared with an ordinary equality operator, which returns as
+      soon as two bytes differ. The time taken leaks how much of the value was
+      correct, which is enough to recover it one byte at a time.
+    metadata:
+      category: security
+      cwe:
+        - "CWE-208: Observable Timing Discrepancy"
+      owasp:
+        - "A02:2021 - Cryptographic Failures"
+      confidence: LOW
+      vibekiller:
+        rule_id: crypto.non-constant-time-comparison
+        category: cryptographic-failure
+        severity: medium
+        confidence: heuristic
+        fixable_by_giver: true
+        root_cause_hint: >-
+          String equality short-circuits, so comparison time depends on the
+          secret.
+        guidance: >-
+          Compare with a constant-time function, for example
+          crypto.timingSafeEqual or hmac.compare_digest, after checking that
+          both values are the same length.
+    pattern-either:
+      - patterns:
+          - pattern-either:
+              - pattern: '$A === $B'
+              - pattern: '$A == $B'
+              - pattern: '$A != $B'
+              - pattern: '$A !== $B'
+          - pattern-regex: >-
+              (?i)(api_?key|apikey|token|signature|hmac|secret|password|digest|mac)\s*[=!]==?
+      - pattern: 'hmac.new(...).hexdigest() == $X'
+
+  - id: predictable-randomness-for-security-value
+    languages: [javascript, typescript, python]
+    severity: ERROR
+    message: >-
+      A security-relevant value is being generated from a non-cryptographic
+      random source. These generators are seeded predictably and their output
+      can be reproduced, so the token can be guessed.
+    metadata:
+      category: security
+      cwe:
+        - "CWE-338: Use of Cryptographically Weak Pseudo-Random Number Generator"
+      owasp:
+        - "A02:2021 - Cryptographic Failures"
+      confidence: MEDIUM
+      vibekiller:
+        rule_id: crypto.predictable-token
+        category: cryptographic-failure
+        severity: high
+        confidence: likely
+        fixable_by_giver: true
+        root_cause_hint: >-
+          The convenient random function was used where a cryptographic one is
+          required.
+        guidance: >-
+          Generate the value with a cryptographic source, for example
+          crypto.randomBytes(32).toString("hex") or secrets.token_urlsafe(32).
+    # The name of the thing being assigned is the signal, and it is on the
+    # enclosing statement rather than on the call itself. A regex inside
+    # `patterns` only sees the matched node's own text, which for
+    # `random.choice(...)` is just the call, so the name has to be read from
+    # the surrounding assignment through a metavariable instead.
+    patterns:
+      - pattern-either:
+          - pattern: 'Math.random()'
+          - pattern: 'random.random()'
+          - pattern: 'random.randint(...)'
+          - pattern: 'random.choice(...)'
+          - pattern: 'random.choices(...)'
+          - pattern: 'random.sample(...)'
+      # The assignment form is the one that works in every language this rule
+      # covers: Semgrep normalizes var, let and const declarations to it, so
+      # `$VAR = ...` binds the name in both Python and JavaScript. A token
+      # generated and returned without ever being named is missed, which is
+      # the right way round for a rule that keys on naming.
+      - pattern-inside: '$VAR = ...'
+      - metavariable-regex:
+          metavariable: $VAR
+          regex: >-
+            (?i).*(token|secret|password|passwd|otp|code|nonce|salt|session|reset|verif|api_?key|invite).*
+
+  - id: session-cookie-missing-protections
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: >-
+      A session cookie is set without httpOnly or without secure. Without
+      httpOnly any script on the page can read it; without secure it is sent
+      over plain HTTP.
+    metadata:
+      category: security
+      cwe:
+        - "CWE-1004: Sensitive Cookie Without 'HttpOnly' Flag"
+      owasp:
+        - "A05:2021 - Security Misconfiguration"
+      confidence: MEDIUM
+      vibekiller:
+        rule_id: auth.session-cookie-unprotected
+        category: identification-and-authentication-failure
+        severity: medium
+        confidence: likely
+        fixable_by_giver: true
+        root_cause_hint: >-
+          Cookie flags were left at their permissive defaults.
+        guidance: >-
+          Set httpOnly, secure and sameSite on the session cookie. Keep secure
+          switched on in production even if it has to be relaxed for local
+          development over HTTP.
+    patterns:
+      - pattern-either:
+          - pattern: '$RES.cookie($NAME, $VALUE, { ... })'
+          - pattern: 'session({ ... })'
+          - pattern: 'cookieSession({ ... })'
+      - pattern-not-regex: '(?s)httpOnly\s*:\s*true'

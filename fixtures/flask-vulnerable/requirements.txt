@@ -1,0 +1,7 @@
+# Deliberately vulnerable Flask fixture for Vibe Killer's test suite.
+# The pinned versions are old on purpose: the dependency check should find
+# published advisories for them.
+Flask==2.0.1
+PyJWT==1.7.1
+requests==2.25.1
+Werkzeug==2.0.1

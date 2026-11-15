@@ -1,0 +1,51 @@
+# Build output. The binary is ~19M and is reproducible from source with
+# `go build -o vibekiller .`, so it does not belong in history.
+#
+# Both patterns are root-anchored, and that is load-bearing. A bare
+# `vibekiller` has no slash in it, so git matches it against every file AND
+# directory of that name at any depth -- which silently excludes
+# rules/vibekiller/, the entire embedded Semgrep rule pack. The tree still
+# looks complete locally because the files are right there; it is the clone
+# that fails, at `go:embed vibekiller/*.yaml` with "no matching files".
+/vibekiller
+/vibekiller.exe
+/dist/
+*.test
+*.test.exe
+
+# Run output.
+#
+# This is the important one. runs/<id>/ holds findings.json, which carries
+# file paths, code snippets and request/response evidence from whatever the
+# operator scanned. Vibe Killer's whole premise is that results stay local;
+# committing a run directory would undo that for anyone who pushes the repo,
+# and a fixture scan is cheap to regenerate anyway.
+/runs/
+runs/
+history.db
+*.db-wal
+*.db-shm
+
+# Fixture dependencies. The fixtures are deliberately vulnerable stubs; their
+# manifests are committed, so an installed tree is disposable and should never
+# be pushed under a repo whose README tells people to scan it.
+node_modules/
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# Local operator config. vibekiller.config.yaml is committed as the worked
+# example; a real one names real hosts, so keep overrides out of the repo.
+vibekiller.local.yaml
+vibekiller.config.local.yaml
+.env
+.env.*
+
+# Editor and OS noise.
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini

@@ -1,0 +1,436 @@
+# Vibe Killer first-party rule pack: misconfiguration, unsafe fetch and
+# information disclosure.
+#
+# These are the settings that make a development setup convenient and a
+# deployed one open: a permissive CORS policy, a debugger left on, a stack
+# trace returned to the caller. They tend to survive into production precisely
+# because they never cause a failure that anyone notices.
+
+rules:
+  - id: cors-wildcard-with-credentials
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      CORS is configured to reflect any origin while also allowing
+      credentials. Any website a logged-in user visits can then call this API
+      as them and read the response.
+    metadata:
+      category: security
+      cwe:
+        - "CWE-942: Permissive Cross-domain Policy with Untrusted Domains"
+      owasp:
+        - "A05:2021 - Security Misconfiguration"
+      confidence: HIGH
+      references:
+        - https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS
+      vibekiller:
+        rule_id: misconfig.cors-credentialed-wildcard
+        category: security-misconfiguration
+        severity: high
+        confidence: likely
+        fixable_by_giver: true
+        root_cause_hint: >-
+          The origin check was widened to unblock a browser error during
+          development, and credentials were left enabled.
+        guidance: >-
+          Replace the reflected origin with an explicit allowlist and keep
+          credentials enabled only for those origins. Reflecting the request's
+          Origin header is equivalent to allowing every site.
+        dynamic_rule: misconfig.cors-reflection
+    pattern-either:
+      - patterns:
+          - pattern: 'cors({ ... })'
+          - pattern-regex: '(?s)credentials\s*:\s*true'
+          - pattern-regex: '(?s)origin\s*:\s*(true|[''"]\*[''"]|function|\(.*\)\s*=>)'
+      # Setting the header from the request's own Origin is reflection
+      # however it is written, so it is matched on its own. Pairing it with a
+      # second regex for the credentials header cannot work: the two are set
+      # on separate lines and both regexes would have to match one range.
+      - pattern-regex: >-
+          (?i)access-control-allow-origin['"]?\s*,\s*(['"]\*['"]|req\.headers\.origin|request\.headers)
+
+  - id: cors-origin-reflected-python
+    languages: [python]
+    severity: ERROR
+    message: >-
+      The response reflects the request's Origin header while allowing
+      credentials, which permits any site to make credentialed calls to this
+      API on a user's behalf.
+    metadata:
+      category: security
+      cwe:
+        - "CWE-942: Permissive Cross-domain Policy with Untrusted Domains"
+      owasp:
+        - "A05:2021 - Security Misconfiguration"
+      confidence: MEDIUM
+      vibekiller:
+        rule_id: misconfig.cors-credentialed-wildcard
+        category: security-misconfiguration
+        severity: high
+        confidence: likely
+        fixable_by_giver: true
+        root_cause_hint: >-
+          The allowed origin is taken from the request instead of from
+          configuration.
+        guidance: >-
+          Configure an explicit list of allowed origins, for example with
+          flask-cors' origins parameter, and do not echo the Origin header.
+        dynamic_rule: misconfig.cors-reflection
+    # The reflection is the whole problem, so it is matched on its own rather
+    # than requiring the credentials header to appear in the same expression.
+    # Two regexes in one `patterns` block must match the same range, and these
+    # two headers are always set on separate lines.
+    pattern-either:
+      - pattern: 'CORS($APP, ..., origins="*", ..., supports_credentials=True, ...)'
+      - pattern: 'CORS($APP, ..., supports_credentials=True, ...)'
+      - pattern-regex: >-
+          (?i)access-control-allow-origin['"]?\s*\]?\s*=\s*request\.headers
+
+  - id: debug-mode-enabled
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Debug mode is enabled. In Flask this exposes an interactive console on
+      error pages, which allows code execution; in Django it returns settings
+      and query contents in error responses.
+    metadata:
+      category: security
+      cwe:
+        - "CWE-489: Active Debug Code"
+      owasp:
+        - "A05:2021 - Security Misconfiguration"
+      confidence: HIGH
+      vibekiller:
+        rule_id: misconfig.debug-mode-enabled
+        category: security-misconfiguration
+        severity: critical
+        confidence: likely
+        fixable_by_giver: true
+        root_cause_hint: >-
+          A development convenience is set unconditionally rather than from
+          the environment.
+        guidance: >-
+          Drive this from configuration and default it off, for example
+          debug=os.environ.get("FLASK_DEBUG") == "1". The interactive debugger
+          must never be reachable on a deployed instance.
+        dynamic_rule: misconfig.debug-endpoint-exposed
+    pattern-either:
+      - pattern: '$APP.run(..., debug=True, ...)'
+      - pattern: '$APP.debug = True'
+      - pattern: 'DEBUG = True'
+      - pattern: '$APP.config["DEBUG"] = True'
+      - pattern: '$APP.config.update(..., DEBUG=True, ...)'
+
+  - id: wildcard-allowed-hosts
+    languages: [python]
+    severity: WARNING
+    message: >-
+      Every Host header is accepted. This allows host-header poisoning, where
+      an attacker's domain ends up in password-reset links and absolute URLs
+      the application generates.
+    metadata:
+      category: security
+      cwe:
+        - "CWE-20: Improper Input Validation"
+      owasp:
+        - "A05:2021 - Security Misconfiguration"
+      confidence: HIGH
+      vibekiller:
+        rule_id: misconfig.wildcard-allowed-hosts
+        category: security-misconfiguration
+        severity: medium
+        confidence: likely
+        fixable_by_giver: true
+        root_cause_hint: >-
+          The host allowlist was widened to make deployment work and never
+          narrowed.
+        guidance: >-
+          List the hostnames this instance actually serves in ALLOWED_HOSTS.
+    pattern-either:
+      - pattern: 'ALLOWED_HOSTS = ["*"]'
+      - pattern: 'ALLOWED_HOSTS = [''*'']'
+
+  - id: error-detail-returned-to-caller
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: >-
+      An exception's message or stack trace is sent to the caller. That
+      discloses file paths, library versions and often fragments of queries,
+      which is how an attacker learns the shape of the system.
+    metadata:
+      category: security
+      cwe:
+        - "CWE-209: Generation of Error Message Containing Sensitive Information"
+      owasp:
+        - "A05:2021 - Security Misconfiguration"
+      confidence: MEDIUM
+      vibekiller:
+        rule_id: misconfig.error-detail-disclosed
+        category: security-misconfiguration
+        severity: medium
+        confidence: likely
+        fixable_by_giver: true
+        root_cause_hint: >-
+          The error handler forwards the exception to the client instead of
+          logging it server-side.
+        guidance: >-
+          Log the error with its stack on the server and return a generic
+          message with a correlation id to the caller.
+        dynamic_rule: misconfig.verbose-error
+    # Every alternative names a property of the error object. An earlier
+    # version also matched `error: $ERR`, which bound $ERR to anything at all
+    # and so fired on `{ error: 'internal error' }` — the correct, generic
+    # message this rule exists to recommend.
+    pattern-either:
+      - pattern: '$RES.status($CODE).json({ ..., error: $ERR.message, ... })'
+      - pattern: '$RES.status($CODE).json({ ..., stack: $ERR.stack, ... })'
+      - pattern: '$RES.status($CODE).json({ ..., message: $ERR.message, ... })'
+      - pattern: '$RES.json({ ..., error: $ERR.message, ... })'
+      - pattern: '$RES.json({ ..., stack: $ERR.stack, ... })'
+      - pattern: '$RES.send($ERR.stack)'
+      - pattern: '$RES.send($ERR.message)'
+      - pattern: '$RES.status($CODE).send($ERR.message)'
+      - pattern: '$RES.status($CODE).send($ERR.stack)'
+      - pattern: '$RES.status($CODE).send(String($ERR))'
+
+  - id: unsafe-fetch-of-user-supplied-url
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      The server fetches a URL supplied by the caller. Requests then originate
+      from inside your network, which reaches internal services and cloud
+      instance metadata that are not exposed externally.
+    metadata:
+      category: security
+      cwe:
+        - "CWE-918: Server-Side Request Forgery"
+      owasp:
+        - "A10:2021 - Server-Side Request Forgery"
+      confidence: HIGH
+      references:
+        - https://cheatsheetseries.owasp.org/cheatsheets/Server_Side_Request_Forgery_Prevention_Cheat_Sheet.html
+      vibekiller:
+        rule_id: ssrf.user-supplied-url-fetched
+        category: server-side-request-forgery
+        severity: high
+        confidence: likely
+        fixable_by_giver: true
+        root_cause_hint: >-
+          A URL from the request is fetched without checking the host it
+          resolves to, so the server's network position is lent to the caller.
+          This is especially common in document-ingestion and agent features.
+        guidance: >-
+          Validate the URL against an allowlist of hosts, resolve it and reject
+          addresses that are loopback, link-local or private, and re-check
+          after each redirect. Checking the string before resolution is not
+          enough, because a name can resolve to an internal address.
+        dynamic_rule: ssrf.internal-canary-fetch
+    mode: taint
+    pattern-sources:
+      - pattern: '$REQ.body'
+      - pattern: '$REQ.query'
+      - pattern: '$REQ.params'
+    pattern-sanitizers:
+      - pattern: '$X.isAllowedUrl(...)'
+      - pattern: 'validateUrl(...)'
+      # Constructing a URL object is treated as the marker for validation,
+      # which is a deliberate trade of the same kind as the path rule's.
+      #
+      # The correct idiom is parse-then-check: build a URL, then test its
+      # protocol and hostname against an allowlist. The test is an `if` guard
+      # and taint cannot see guards, so requiring it would report every
+      # correct handler. This keeps the rule on the case that actually
+      # dominates generated code — fetching the request value straight through
+      # — and leaves a parse with no check after it to the dynamic
+      # ssrf.internal-canary-fetch probe.
+      - pattern: 'new URL(...)'
+    pattern-sinks:
+      - pattern-either:
+          - pattern: 'fetch(...)'
+          - pattern: 'axios.get(...)'
+          - pattern: 'axios.post(...)'
+          - pattern: 'axios($CFG)'
+          - pattern: 'got(...)'
+          - pattern: 'request(...)'
+          - pattern: 'http.get(...)'
+          - pattern: 'https.get(...)'
+          - pattern: '$CLIENT.get(...)'
+
+  - id: unsafe-fetch-of-user-supplied-url-python
+    languages: [python]
+    severity: ERROR
+    message: >-
+      The server fetches a caller-supplied URL, so requests originate from
+      inside your network and can reach internal services and instance
+      metadata.
+    metadata:
+      category: security
+      cwe:
+        - "CWE-918: Server-Side Request Forgery"
+      owasp:
+        - "A10:2021 - Server-Side Request Forgery"
+      confidence: HIGH
+      vibekiller:
+        rule_id: ssrf.user-supplied-url-fetched
+        category: server-side-request-forgery
+        severity: high
+        confidence: likely
+        fixable_by_giver: true
+        root_cause_hint: >-
+          The URL is taken from the request and fetched without resolving and
+          checking the destination address.
+        guidance: >-
+          Restrict fetches to an allowlist of hosts, resolve the name and
+          reject private, loopback and link-local addresses, and re-check on
+          every redirect.
+        dynamic_rule: ssrf.internal-canary-fetch
+    # Taint mode, so the URL is actually traced from the request to the fetch
+    # rather than the rule hoping both appear on one line.
+    mode: taint
+    pattern-sources:
+      - pattern: 'request.args'
+      - pattern: 'request.form'
+      - pattern: 'request.json'
+      - pattern: 'request.values'
+      - pattern: 'request.data'
+      - pattern: 'request.get_json(...)'
+    pattern-sanitizers:
+      - pattern: 'is_allowed_url(...)'
+      - pattern: 'validate_url(...)'
+    pattern-sinks:
+      - patterns:
+          # Named clients only. A bare `$X.get(...)` would match every
+          # dictionary lookup in the file, which is how a rule ends up
+          # reporting six findings in a handler that makes no request at all.
+          - pattern-either:
+              - pattern: 'requests.get(...)'
+              - pattern: 'requests.post(...)'
+              - pattern: 'requests.put(...)'
+              - pattern: 'requests.patch(...)'
+              - pattern: 'requests.delete(...)'
+              - pattern: 'requests.head(...)'
+              - pattern: 'requests.request(...)'
+              - pattern: 'urllib.request.urlopen(...)'
+              - pattern: 'httpx.get(...)'
+              - pattern: 'httpx.post(...)'
+              - pattern: 'httpx.request(...)'
+              - pattern: 'aiohttp.request(...)'
+          # A fetch in a handler that checks the host against an allowlist is
+          # the correct idiom. Taint cannot see that check, because the test
+          # is on the parsed URL while the string actually fetched is the
+          # original, so the exclusion has to be structural.
+          - pattern-not-inside: |
+              def $F(...):
+                  ...
+                  if <... $PARSED.hostname ...>:
+                      ...
+                  ...
+          - pattern-not-inside: |
+              async def $F(...):
+                  ...
+                  if <... $PARSED.hostname ...>:
+                      ...
+                  ...
+
+  - id: directory-listing-or-whole-tree-served
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: >-
+      Static file serving is configured with directory listing enabled, or it
+      is rooted at the project directory. Either exposes source files, config
+      and dotfiles that were never meant to be reachable.
+    metadata:
+      category: security
+      cwe:
+        - "CWE-548: Exposure of Information Through Directory Listing"
+      owasp:
+        - "A05:2021 - Security Misconfiguration"
+      confidence: MEDIUM
+      vibekiller:
+        rule_id: misconfig.static-exposure
+        category: security-misconfiguration
+        severity: medium
+        confidence: likely
+        fixable_by_giver: true
+        root_cause_hint: >-
+          The static root is the repository rather than a dedicated public
+          directory.
+        guidance: >-
+          Serve from a directory that contains only public assets, and leave
+          directory indexing off.
+        dynamic_rule: misconfig.directory-listing
+    pattern-either:
+      - pattern: 'express.static($DIR, { ..., index: false, ... })'
+      - pattern: 'serveIndex(...)'
+      - pattern: 'express.static(__dirname)'
+      - pattern: 'express.static(".")'
+      - pattern: 'express.static("./")'
+      - pattern: 'express.static("..")'
+
+  - id: tls-verification-disabled
+    languages: [javascript, typescript, python]
+    severity: ERROR
+    message: >-
+      Certificate verification is switched off for outbound requests. The
+      connection is still encrypted but no longer authenticated, so anything
+      on the path can read and change it.
+    metadata:
+      category: security
+      cwe:
+        - "CWE-295: Improper Certificate Validation"
+      owasp:
+        - "A02:2021 - Cryptographic Failures"
+      confidence: HIGH
+      vibekiller:
+        rule_id: crypto.tls-verification-disabled
+        category: cryptographic-failure
+        severity: high
+        confidence: likely
+        fixable_by_giver: true
+        root_cause_hint: >-
+          Verification was disabled to get past a certificate error, usually
+          against a development or self-signed endpoint.
+        guidance: >-
+          Leave verification on and trust the specific CA you need instead, by
+          pointing the client at the CA bundle. Disabling verification removes
+          the only check that the peer is who it claims to be.
+    pattern-either:
+      - pattern: 'rejectUnauthorized: false'
+      - pattern: 'process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0"'
+      - pattern: 'requests.$F(..., verify=False, ...)'
+      - pattern: 'ssl._create_unverified_context()'
+      - pattern: 'ssl.$CTX.verify_mode = ssl.CERT_NONE'
+
+  - id: container-runs-as-root
+    languages: [generic]
+    paths:
+      include:
+        - "*Dockerfile*"
+        - "*.dockerfile"
+    severity: WARNING
+    message: >-
+      This image does not drop to an unprivileged user, so the application
+      process runs as root inside the container. A flaw in the app then has
+      root in that filesystem and namespace.
+    metadata:
+      category: security
+      cwe:
+        - "CWE-250: Execution with Unnecessary Privileges"
+      owasp:
+        - "A05:2021 - Security Misconfiguration"
+      confidence: LOW
+      vibekiller:
+        rule_id: misconfig.container-root-user
+        category: security-misconfiguration
+        severity: medium
+        confidence: heuristic
+        fixable_by_giver: true
+        root_cause_hint: >-
+          No USER instruction, so the image keeps the base image's default of
+          root.
+        guidance: >-
+          Create an unprivileged user in the image and add a USER instruction
+          before CMD or ENTRYPOINT.
+    patterns:
+      - pattern-regex: '(?m)^\s*FROM\s+\S+'
+      - pattern-not-regex: '(?mi)^\s*USER\s+(?!root\s*$)\S+'

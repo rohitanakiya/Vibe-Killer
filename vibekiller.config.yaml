@@ -1,0 +1,75 @@
+# Vibe Killer configuration for scanning this repository itself.
+#
+# This file declares what Vibe Killer is allowed to touch. Nothing outside
+# authorized_targets is ever contacted, and endpoint checks additionally
+# require the --i-own-this-target flag on the command line.
+
+repo_path: .
+
+# Endpoint checks refuse any host that is not listed here. These are the two
+# fixture apps, both of which bind to the loopback interface only.
+authorized_targets:
+  - http://127.0.0.1:3000
+  - http://localhost:3000
+  - http://127.0.0.1:5000
+  - http://localhost:5000
+
+# Two throwaway accounts that exist in the fixture apps. Access-control checks
+# compare what one can see against what the other owns.
+#
+# Tokens are read from environment variables, never from this file, so this
+# file is safe to commit. For the fixtures:
+#
+#   export VK_USERA_TOKEN=userA-token
+#   export VK_USERB_TOKEN=userB-token
+seeded_users:
+  - { id: userA, token_env: VK_USERA_TOKEN, role: member }
+  - { id: userB, token_env: VK_USERB_TOKEN, role: member }
+
+# Decoy records the fixtures seed for exactly this purpose. Reading one of
+# these across a boundary is how an access-control finding is proven, which is
+# why no real record is ever read.
+#
+# marker is a distinctive string inside the record, so a check can tell that
+# the record itself came back rather than inferring it from a status code.
+canary_records:
+  - { owner: userB, resource: order, id: "90001", marker: "VK-CANARY-USERB" }
+  - { owner: userB, resource: profile, id: "90001", marker: "VK-CANARY-USERB-PROFILE" }
+
+dynamic:
+  # Non-destructive is the default. Setting it false is not enough on its own
+  # to enable state-changing checks: disposable_env must also be true, because
+  # the first is easy to set while experimenting and the second is a claim
+  # about the data.
+  non_destructive: true
+  disposable_env: false
+
+  # Request rate and concurrency, per host. Low on purpose: the target is
+  # usually a development server on the same machine as the scanner.
+  max_rps: 20
+  concurrency: 4
+  timeout_seconds: 10
+
+runtime:
+  enabled: false
+
+scanners:
+  semgrep:
+    disabled: false
+    # Vibe Killer always runs its own embedded rule pack, which needs no
+    # network. Registry packs are downloaded at scan time, so they are opt-in:
+    # rule_packs: ["p/security-audit"]
+  osv_scanner:
+    disabled: false
+  gitleaks:
+    disabled: false
+
+# Paths that are not application code. The fixtures' installed dependencies
+# are excluded so a scan of this repo measures this repo.
+exclude:
+  - "fixtures/*/node_modules/**"
+  - "runs/**"
+  - "vibekiller.exe"
+
+# A scan exits non-zero when an open finding is at or above this severity.
+severity_threshold: high

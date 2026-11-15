@@ -1,0 +1,221 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/rohitanakiya/Vibe-Killer/main/schema/finding.schema.json",
+  "title": "Vibe Killer Finding",
+  "description": "A single security finding emitted by Vibe Killer. This is the stable contract consumed by Vibe Giver. Versioned via schema_version.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "finding_id",
+    "rule_id",
+    "title",
+    "category",
+    "severity",
+    "confidence",
+    "source",
+    "location",
+    "evidence",
+    "remediation",
+    "status"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0",
+      "description": "Version of this schema the finding conforms to."
+    },
+    "finding_id": {
+      "type": "string",
+      "pattern": "^vk-[0-9a-f]{12}$",
+      "description": "Stable identifier: vk- plus a truncated hash over (rule_id, location key, evidence key). Stable across runs for the same underlying issue; deliberately excludes line numbers and repo revision so that unrelated edits do not change it."
+    },
+    "rule_id": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[a-z0-9]+(?:[-.][a-z0-9]+)*$",
+      "description": "Dotted identifier of the check that produced this, e.g. idor.sequential-id-access."
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "description": "One-line human-readable summary of the weakness."
+    },
+    "category": {
+      "type": "string",
+      "enum": [
+        "broken-access-control",
+        "cryptographic-failure",
+        "injection",
+        "insecure-design",
+        "security-misconfiguration",
+        "vulnerable-dependency",
+        "identification-and-authentication-failure",
+        "software-and-data-integrity-failure",
+        "logging-and-monitoring-failure",
+        "server-side-request-forgery",
+        "secrets-exposure",
+        "cross-service-exposure"
+      ],
+      "description": "OWASP-aligned category bucket."
+    },
+    "cwe": {
+      "type": ["string", "null"],
+      "pattern": "^CWE-[0-9]+$",
+      "description": "Primary CWE identifier, when one applies."
+    },
+    "severity": {
+      "type": "string",
+      "enum": ["info", "low", "medium", "high", "critical"]
+    },
+    "confidence": {
+      "type": "string",
+      "enum": ["heuristic", "likely", "confirmed"],
+      "description": "confirmed is set only when the finding was reproduced by a non-destructive check."
+    },
+    "source": {
+      "type": "string",
+      "enum": ["sast", "dast", "runtime", "deps", "secrets", "blast-radius"],
+      "description": "Which engine produced the finding."
+    },
+    "location": {
+      "type": "object",
+      "required": ["type"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["code", "endpoint", "dependency", "config"]
+        },
+        "file": { "type": "string", "description": "Repo-relative path, forward slashes." },
+        "line": { "type": "integer", "minimum": 0 },
+        "end_line": { "type": "integer", "minimum": 0 },
+        "symbol": { "type": "string", "description": "Enclosing function, method or route handler." },
+        "endpoint": { "type": "string", "description": "Method plus normalized path template, e.g. GET /api/orders/{id}." },
+        "package": { "type": "string", "description": "Dependency name, for location.type=dependency." },
+        "ecosystem": { "type": "string", "description": "Dependency ecosystem, e.g. npm, PyPI, Go." },
+        "version": { "type": "string", "description": "Resolved dependency version." },
+        "config_key": { "type": "string", "description": "Dotted key path inside a config file." },
+        "repo_rev": { "type": "string", "description": "Git SHA of the tree that was analyzed. Informational; never part of finding_id." }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "required": ["summary"],
+      "additionalProperties": false,
+      "properties": {
+        "summary": { "type": "string", "minLength": 1 },
+        "request": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "The exact request a dynamic check sent. Auth is recorded as a seeded-user label, never as a token value.",
+          "properties": {
+            "method": { "type": "string" },
+            "path": { "type": "string" },
+            "headers": { "type": "object", "additionalProperties": { "type": "string" } },
+            "body": { "type": "string" },
+            "auth": { "type": "string", "description": "Seeded user label, e.g. userA-token. Never the token itself." }
+          }
+        },
+        "observed": { "type": "string", "description": "What actually happened." },
+        "expected": { "type": "string", "description": "What a correctly-behaving app would have done." },
+        "snippet": { "type": "string", "description": "Redacted source excerpt for static findings." },
+        "taint_path": {
+          "type": "array",
+          "description": "Ordered source-to-sink steps for data-flow findings.",
+          "items": {
+            "type": "object",
+            "required": ["file", "line", "note"],
+            "additionalProperties": false,
+            "properties": {
+              "file": { "type": "string" },
+              "line": { "type": "integer", "minimum": 0 },
+              "symbol": { "type": "string" },
+              "note": { "type": "string" }
+            }
+          }
+        },
+        "evidence_key": {
+          "type": "string",
+          "description": "Discriminator that distinguishes two findings of the same rule at the same location, e.g. a CVE id, a secret fingerprint, or a canary id. Part of finding_id."
+        }
+      }
+    },
+    "reproduction": {
+      "type": ["object", "null"],
+      "required": ["kind"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "type": "string", "enum": ["http", "script", "static"] },
+        "command": { "type": "string" },
+        "steps": { "type": "array", "items": { "type": "string" } },
+        "artifact_path": { "type": "string", "description": "Run-relative path to a replayable artifact, e.g. runs/<id>/repro/vk-abc123.http." }
+      }
+    },
+    "blast_radius": {
+      "type": ["object", "null"],
+      "description": "Present only for cross-service exposure findings. Always scoped to declared targets.",
+      "required": ["reachable_from", "reached", "scope"],
+      "additionalProperties": false,
+      "properties": {
+        "reachable_from": { "type": "string" },
+        "reached": { "type": "array", "items": { "type": "string" } },
+        "scope": { "type": "string", "const": "declared-targets-only" }
+      }
+    },
+    "remediation": {
+      "type": "object",
+      "required": ["guidance", "fixable_by_giver"],
+      "additionalProperties": false,
+      "properties": {
+        "guidance": { "type": "string", "minLength": 1 },
+        "root_cause_hint": { "type": ["string", "null"] },
+        "references": { "type": "array", "items": { "type": "string" } },
+        "fixable_by_giver": {
+          "type": "boolean",
+          "description": "False when a human must act, e.g. rotating an exposed credential."
+        },
+        "human_required_reason": { "type": ["string", "null"] }
+      }
+    },
+    "status": {
+      "type": "string",
+      "enum": ["open", "fixed", "regressed", "accepted", "false_positive"]
+    },
+    "rank": {
+      "type": ["number", "null"],
+      "description": "Computed severity x confidence x exploitability score used for ordering."
+    },
+    "merged_from": {
+      "type": "array",
+      "description": "Sources that were merged into this finding during de-duplication.",
+      "items": { "type": "string", "enum": ["sast", "dast", "runtime", "deps", "secrets", "blast-radius"] }
+    },
+    "first_seen_run": { "type": ["string", "null"] },
+    "last_seen_run": { "type": ["string", "null"] }
+  },
+  "allOf": [
+    {
+      "description": "A finding may only claim confirmed confidence if it carries a reproduction.",
+      "if": { "properties": { "confidence": { "const": "confirmed" } }, "required": ["confidence"] },
+      "then": { "required": ["reproduction"], "properties": { "reproduction": { "type": "object" } } }
+    },
+    {
+      "description": "Secrets findings always require a human to rotate the credential.",
+      "if": { "properties": { "source": { "const": "secrets" } }, "required": ["source"] },
+      "then": {
+        "properties": {
+          "remediation": {
+            "properties": { "fixable_by_giver": { "const": false } },
+            "required": ["human_required_reason"]
+          }
+        }
+      }
+    },
+    {
+      "description": "Cross-service exposure findings carry a blast_radius block.",
+      "if": { "properties": { "source": { "const": "blast-radius" } }, "required": ["source"] },
+      "then": { "required": ["blast_radius"], "properties": { "blast_radius": { "type": "object" } } }
+    }
+  ]
+}

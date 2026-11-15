@@ -1,0 +1,301 @@
+// Package check defines what a Vibe Killer check is and holds the registry
+// the orchestrator draws from.
+//
+// A check is a self-contained unit: it declares what it needs, detects, and
+// where it is dynamic, knows how to reproduce itself. It never decides whether
+// it is allowed to run. That decision belongs to CanRun below, so that the
+// safety gates are enforced once, centrally, rather than being re-implemented
+// correctly in every check and incorrectly in one.
+package check
+
+import (
+	"context"
+	"fmt"
+	"sort"
+	"strings"
+	"sync"
+
+	"github.com/rohitanakiya/Vibe-Killer/internal/config"
+	"github.com/rohitanakiya/Vibe-Killer/internal/finding"
+	"github.com/rohitanakiya/Vibe-Killer/internal/httpx"
+	"github.com/rohitanakiya/Vibe-Killer/internal/run"
+	"github.com/rohitanakiya/Vibe-Killer/internal/runtime"
+	"github.com/rohitanakiya/Vibe-Killer/internal/scope"
+	"github.com/rohitanakiya/Vibe-Killer/internal/surface"
+)
+
+// Layer is which engine a check belongs to.
+type Layer string
+
+const (
+	LayerStatic   Layer = "static"
+	LayerEndpoint Layer = "endpoint"
+	LayerRuntime  Layer = "runtime"
+	LayerDeps     Layer = "deps"
+	LayerSecrets  Layer = "secrets"
+	LayerExposure Layer = "exposure"
+)
+
+// Meta is a check's self-description, including its prerequisites.
+type Meta struct {
+	// RuleID is the contract rule_id this check emits.
+	RuleID string
+
+	// Title is a short human label for progress output.
+	Title string
+
+	Layer    Layer
+	Category finding.Category
+
+	// NeedsTarget means the check talks to a running instance.
+	NeedsTarget bool
+
+	// NeedsSeededUsers means the check needs at least two seeded identities
+	// to compare across a boundary.
+	NeedsSeededUsers int
+
+	// NeedsCanary means the check needs a seeded canary record to read, so it
+	// never has to touch a real one.
+	NeedsCanary bool
+
+	// Mutating means the check changes state on the target. Such a check runs
+	// only when the operator has opened both gates in config.
+	Mutating bool
+
+	// NeedsSurface means the check needs the route model.
+	NeedsSurface bool
+}
+
+// Env is everything a check is given. A check reads from Env and never
+// constructs its own transport or reads config files of its own.
+type Env struct {
+	Config *config.Config
+	Guard  *scope.Guard
+	Run    *run.Run
+
+	// HTTP is nil for a static-only run.
+	HTTP *httpx.Client
+
+	// Target is the base URL of the running instance, or "" when there is
+	// none.
+	Target string
+
+	// Surface is the model of the app, or nil if mapping did not run.
+	Surface *surface.Surface
+
+	RepoRoot string
+	RepoRev  string
+
+	// RulesDir is where the embedded Semgrep pack was written for this run.
+	RulesDir string
+
+	// HasGit reports whether the repo is a git checkout, which decides
+	// whether secret scanning can look at history.
+	HasGit bool
+
+	// Runtime is the observe-only runtime observer, or nil when the run did
+	// not enable it. It is an interface so the core never knows which
+	// stack-specific agent is reporting.
+	Runtime runtime.Observer
+}
+
+// Check is one detection unit.
+type Check interface {
+	Meta() Meta
+	Detect(ctx context.Context, env *Env) ([]finding.Finding, error)
+}
+
+// Reproducer is implemented by checks that can re-verify a single finding on
+// demand, which is what backs `vibekiller reproduce`.
+type Reproducer interface {
+	Check
+
+	// Reproduce re-runs the proof for one finding and reports whether it still
+	// holds.
+	Reproduce(ctx context.Context, env *Env, f finding.Finding) (Result, error)
+}
+
+// Result is the outcome of a reproduction attempt.
+type Result struct {
+	// Reproduced is true when the issue was observed again.
+	Reproduced bool
+
+	// Evidence is the fresh observation.
+	Evidence finding.Evidence
+
+	// Detail is a human-readable account of what happened.
+	Detail string
+}
+
+// SkipReason explains why a check did not run. A skip is reported rather than
+// silently dropped: a scan that quietly ran half its checks is worse than one
+// that says what it could not do.
+type SkipReason struct {
+	RuleID string
+	Reason string
+}
+
+func (s SkipReason) String() string { return s.RuleID + ": " + s.Reason }
+
+// CanRun decides whether a check may execute in this environment, and says why
+// not when it may not.
+//
+// This is the single enforcement point for the dynamic gates. In particular, a
+// mutating check requires three independent things to be true: the operator
+// turned off the non-destructive default, separately asserted the environment
+// is disposable, and acknowledged target ownership. Any one of them missing
+// means the check does not run.
+func CanRun(m Meta, env *Env) (bool, string) {
+	if m.NeedsTarget {
+		if env.Target == "" {
+			return false, "no running instance was given (pass --target)"
+		}
+		if env.HTTP == nil {
+			return false, "this run has no HTTP client (static-only mode)"
+		}
+		if env.Guard == nil {
+			return false, "no scope guard was built, so no request can be authorized"
+		}
+		if err := env.Guard.AuthorizeTarget(env.Target); err != nil {
+			return false, err.Error()
+		}
+	}
+
+	if m.NeedsSurface && env.Surface == nil {
+		return false, "the application surface was not mapped"
+	}
+
+	// A runtime check needs the agent to be reporting, not merely enabled.
+	// Letting one run against a sink nothing is posting to would produce a
+	// clean result that means only that the agent was never installed, which
+	// is the most misleading outcome available.
+	if m.Layer == LayerRuntime {
+		if env.Runtime == nil {
+			return false, "runtime observation was not enabled for this run (pass --with-runtime)"
+		}
+		if !env.Runtime.Attached() {
+			return false, "the runtime agent is not reporting: no observations have arrived. " +
+				"Install the agent in your application and restart it with VIBEKILLER_SINK set"
+		}
+	}
+
+	if n := m.NeedsSeededUsers; n > 0 {
+		available := 0
+		var missing []string
+		for _, u := range env.Config.SeededUsers {
+			if _, err := u.Token(); err != nil {
+				missing = append(missing, fmt.Sprintf("%s (%s is not set)", u.ID, u.TokenEnv))
+				continue
+			}
+			available++
+		}
+		if available < n {
+			msg := fmt.Sprintf("needs %d seeded users with tokens, found %d", n, available)
+			if len(missing) > 0 {
+				msg += "; missing: " + strings.Join(missing, ", ")
+			}
+			return false, msg
+		}
+	}
+
+	if m.NeedsCanary && len(env.Config.CanaryRecords) == 0 {
+		return false, "needs a seeded canary record to read, and config declares none " +
+			"(a canary is what lets this be proven without touching real data)"
+	}
+
+	if m.Mutating {
+		if !env.Config.MutatingChecksAllowed() {
+			return false, "this check changes state, so it runs only when dynamic.non_destructive " +
+				"is false and dynamic.disposable_env is true"
+		}
+		if env.Guard == nil || !env.Guard.Acknowledged() {
+			return false, "this check changes state and requires --i-own-this-target"
+		}
+	}
+
+	return true, ""
+}
+
+// Registry holds the available checks, keyed by rule id.
+//
+// The shape is modelled on Nuclei's template registry: checks register
+// themselves at init time, and the orchestrator selects by layer or id without
+// knowing what exists.
+type Registry struct {
+	mu     sync.RWMutex
+	checks map[string]Check
+}
+
+// NewRegistry builds an empty registry.
+func NewRegistry() *Registry {
+	return &Registry{checks: map[string]Check{}}
+}
+
+// Default is the registry checks register into at init time.
+var Default = NewRegistry()
+
+// Register adds a check. It panics on a duplicate rule id, because that is a
+// programming error that would otherwise silently drop a check.
+func (r *Registry) Register(c Check) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	id := c.Meta().RuleID
+	if id == "" {
+		panic("check: a check registered with an empty rule id")
+	}
+	if _, dup := r.checks[id]; dup {
+		panic("check: duplicate rule id " + id)
+	}
+	r.checks[id] = c
+}
+
+// Register adds a check to the default registry.
+func Register(c Check) { Default.Register(c) }
+
+// All returns every registered check, ordered by rule id so that runs are
+// deterministic.
+func (r *Registry) All() []Check {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	out := make([]Check, 0, len(r.checks))
+	for _, c := range r.checks {
+		out = append(out, c)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Meta().RuleID < out[j].Meta().RuleID
+	})
+	return out
+}
+
+// ByLayer returns the checks in the given layers.
+func (r *Registry) ByLayer(layers ...Layer) []Check {
+	want := map[Layer]bool{}
+	for _, l := range layers {
+		want[l] = true
+	}
+
+	var out []Check
+	for _, c := range r.All() {
+		if want[c.Meta().Layer] {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// Get returns one check by rule id.
+func (r *Registry) Get(ruleID string) (Check, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	c, ok := r.checks[ruleID]
+	return c, ok
+}
+
+// Len reports how many checks are registered.
+func (r *Registry) Len() int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return len(r.checks)
+}

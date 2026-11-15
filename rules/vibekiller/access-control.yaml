@@ -1,0 +1,324 @@
+# Vibe Killer first-party rule pack: broken access control.
+#
+# Broken access control is the single most common weakness in AI-generated
+# applications, and it has a recognizable shape. A generated handler almost
+# always authenticates correctly (the framework's middleware is well
+# documented and gets copied in) and then forgets to authorize: it takes a
+# record id straight from the request and looks it up without scoping the
+# query to the caller.
+#
+# These rules look for that shape: a lookup keyed on request data in a handler
+# that never mentions the authenticated principal. The `vibekiller` metadata
+# block is read by the Semgrep wrapper, so each rule states its own contract
+# fields instead of having them guessed from the message.
+
+rules:
+  - id: idor-missing-ownership-check-express
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      This route handler looks up a record using an identifier taken from the
+      request, but nothing in the handler references the authenticated user.
+      Any authenticated caller can read another user's record by changing the
+      id in the URL. Authorization has to scope the query itself, not just
+      check that someone is logged in.
+    metadata:
+      category: security
+      cwe:
+        - "CWE-639: Authorization Bypass Through User-Controlled Key"
+      owasp:
+        - "A01:2021 - Broken Access Control"
+      confidence: MEDIUM
+      references:
+        - https://owasp.org/Top10/A01_2021-Broken_Access_Control/
+      vibekiller:
+        rule_id: idor.missing-ownership-check
+        category: broken-access-control
+        severity: high
+        confidence: likely
+        fixable_by_giver: true
+        root_cause_hint: >-
+          Authentication was enforced but authorization was not: the query is
+          keyed only on a client-supplied id.
+        guidance: >-
+          Scope the lookup to the authenticated principal, for example
+          findOne({ _id: req.params.id, userId: req.user.id }), and return 404
+          rather than 403 when it misses so the handler does not confirm that
+          another user's record exists.
+        dynamic_rule: idor.sequential-id-access
+    # Structural, for the same reason as the Python rule above: a positive
+    # `pattern-regex` would narrow the match range and quietly disable the
+    # ownership exclusions below. Keeping the whole route registration as the
+    # range is what lets "nothing in this handler mentions the caller" be
+    # expressed at all.
+    #
+    # `metavariable-regex` is used for the method constraint rather than
+    # `pattern-regex`, because it filters without narrowing the range.
+    # Structural, for the same reason as the Python rule above: a positive
+    # `pattern-regex` narrows the match range and would quietly disable the
+    # ownership exclusions below. The whole route registration has to stay the
+    # range for "nothing in this handler mentions the caller" to mean anything.
+    #
+    # Both filters are `metavariable-regex`, which constrains a binding
+    # without narrowing the range. The path filter is also the more precise
+    # way to say "this route takes a record id": it reads the route template
+    # the author wrote, rather than searching the body for a `req.params`
+    # reference that may be nested anywhere inside an expression.
+    patterns:
+      - pattern-either:
+          - pattern: '$APP.$METHOD($PATH, ..., ($REQ, $RES) => { ... })'
+          - pattern: '$APP.$METHOD($PATH, ..., async ($REQ, $RES) => { ... })'
+          - pattern: '$APP.$METHOD($PATH, ..., function ($REQ, $RES) { ... })'
+          - pattern: '$APP.$METHOD($PATH, ..., async function ($REQ, $RES) { ... })'
+      - metavariable-regex:
+          metavariable: $METHOD
+          regex: '^(get|post|put|patch|delete)$'
+      # The route template carries a parameter, so the handler is addressing
+      # one record by an identifier the caller supplies.
+      - metavariable-regex:
+          metavariable: $PATH
+          regex: '.*:[A-Za-z_][A-Za-z0-9_]*.*'
+      # Nothing in the handler refers to the authenticated principal or to an
+      # ownership column, so the lookup is keyed on that identifier alone.
+      - pattern-not-regex: >-
+          (?s)(\.user\b|currentUser|current_user|\.session\b|userId|user_id|ownerId|owner_id|tenantId|tenant_id|accountId|account_id|createdBy|created_by)
+      - pattern-not-regex: >-
+          (?s)(authorize|requireOwner|assertOwner|verifyOwnership|checkAccess|ability)\s*\(
+      # A handler that reads the filesystem is serving a file, not a record.
+      # Whether its path is confined is a traversal question, and
+      # traversal.path-built-from-input owns it. Leaving this rule to fire
+      # there as well would report one weakness twice under two names.
+      - pattern-not-regex: >-
+          (?s)(fs\.|readFile|writeFile|createReadStream|createWriteStream|sendFile|download\(|path\.(resolve|join))
+
+
+
+
+  - id: idor-missing-ownership-check-python
+    languages: [python]
+    severity: ERROR
+    message: >-
+      This view looks up a record by an identifier taken from the request URL
+      without scoping the query to the current user. Any authenticated caller
+      can read another user's record by changing the id.
+    metadata:
+      category: security
+      cwe:
+        - "CWE-639: Authorization Bypass Through User-Controlled Key"
+      owasp:
+        - "A01:2021 - Broken Access Control"
+      confidence: MEDIUM
+      vibekiller:
+        rule_id: idor.missing-ownership-check
+        category: broken-access-control
+        severity: high
+        confidence: likely
+        fixable_by_giver: true
+        root_cause_hint: >-
+          The query is keyed only on a path parameter, so the record's owner is
+          never part of the lookup.
+        guidance: >-
+          Filter the query by the current user as well as the id, for example
+          Order.query.filter_by(id=order_id, user_id=current_user.id)
+          .first_or_404(), so a record belonging to someone else is simply not
+          found.
+        dynamic_rule: idor.sequential-id-access
+    # The lookup is expressed structurally, inside the handler pattern, rather
+    # than as a `pattern-regex` filter.
+    #
+    # That is not a style choice. A positive `pattern-regex` inside `patterns`
+    # narrows the match range to the regex's own span, and `pattern-not-regex`
+    # is then evaluated against that narrowed span instead of the function. The
+    # result is a rule whose exclusions silently stop working: it reports a
+    # handler that does check ownership, because the line the regex matched
+    # does not happen to contain the ownership check. Keeping the whole handler
+    # as the match range is what makes the exclusions below mean what they say.
+    patterns:
+      - pattern-either:
+          # A hand-rolled scan comparing a record's id to the path parameter.
+          - pattern: |
+              @$APP.route(...)
+              def $VIEW(..., $ID, ...):
+                  ...
+                  <... $REC["id"] == $ID ...>
+                  ...
+          - pattern: |
+              @$APP.route(...)
+              def $VIEW(..., $ID, ...):
+                  ...
+                  <... $REC.id == $ID ...>
+                  ...
+          # The ORM forms, which is what generated code usually produces.
+          - pattern: |
+              @$APP.route(...)
+              def $VIEW(..., $ID, ...):
+                  ...
+                  <... $MODEL.query.get($ID) ...>
+                  ...
+          - pattern: |
+              @$APP.route(...)
+              def $VIEW(..., $ID, ...):
+                  ...
+                  <... $MODEL.query.get_or_404($ID) ...>
+                  ...
+          - pattern: |
+              @$APP.route(...)
+              def $VIEW(..., $ID, ...):
+                  ...
+                  <... $MODEL.query.filter_by(id=$ID) ...>
+                  ...
+          - pattern: |
+              @$APP.route(...)
+              def $VIEW(..., $ID, ...):
+                  ...
+                  <... $MODEL.objects.get(pk=$ID) ...>
+                  ...
+          - pattern: |
+              @$APP.route(...)
+              def $VIEW(..., $ID, ...):
+                  ...
+                  <... $MODEL.objects.get(id=$ID) ...>
+                  ...
+          - pattern: |
+              @$APP.route(...)
+              def $VIEW(..., $ID, ...):
+                  ...
+                  <... $COLL.find_one({"_id": $ID}) ...>
+                  ...
+      # Nothing in the handler refers to the authenticated principal or to an
+      # ownership column, so the lookup is keyed on the client-supplied id
+      # alone. These run against the whole handler, which is why the range
+      # matters above.
+      - pattern-not-regex: >-
+          (?s)(current_user|request\.user|g\.user|session\[|user_id|owner_id|tenant_id|account_id|created_by)
+      - pattern-not-regex: >-
+          (?s)(authorize|has_permission|check_access|assert_owner|require_owner|can_access)\s*\(
+
+
+  - id: route-without-auth-middleware-express
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: >-
+      This route mutates or reads data but has no authentication or
+      authorization middleware and never inspects an authenticated principal.
+      If this endpoint is not meant to be public, it is currently open to
+      anyone who can reach the server.
+    metadata:
+      category: security
+      cwe:
+        - "CWE-862: Missing Authorization"
+      owasp:
+        - "A01:2021 - Broken Access Control"
+      confidence: LOW
+      vibekiller:
+        rule_id: authz.endpoint-missing-auth
+        category: broken-access-control
+        severity: high
+        confidence: heuristic
+        fixable_by_giver: true
+        root_cause_hint: >-
+          Authorization is applied per route by hand, so a route added later
+          silently has none.
+        guidance: >-
+          Attach the authentication middleware to this route, or mount the
+          router behind it, so that a newly added route is protected by
+          default rather than by remembering.
+        dynamic_rule: authz.unprotected-endpoint
+    patterns:
+      - pattern-either:
+          - pattern: |
+              $APP.$METHOD($PATH, async ($REQ, $RES) => { ... })
+          - pattern: |
+              $APP.$METHOD($PATH, ($REQ, $RES) => { ... })
+          - pattern: |
+              $APP.$METHOD($PATH, async function ($REQ, $RES) { ... })
+      - metavariable-regex:
+          metavariable: $METHOD
+          regex: '^(post|put|patch|delete)$'
+      # No middleware argument between the path and the handler, and no
+      # mention of a principal anywhere in the body.
+      - pattern-not-regex: '(?s)(req|request)\.(user|auth|session|currentUser)'
+      - pattern-not-regex: >-
+          (?s)(requireAuth|isAuthenticated|ensureAuth|authenticate|authMiddleware|passport\.|verifyToken|checkJwt|requiresAuth|protect)
+      # A route that is public by design is a decision, not an oversight.
+      # Password reset, email verification and the sign-in family have to be
+      # reachable without credentials, so flagging them is pure noise.
+      - pattern-not-regex: >-
+          (?i)(?s)(public|unauthenticated|webhook|health|/login|/signin|/sign-in|/signup|/sign-up|/register|/logout|/reset|/forgot|/verify|/confirm|/csrf|/metrics|/ping|/status)
+
+  - id: mass-assignment-request-body-spread
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      The whole request body is written into a record. A caller can set any
+      field the model accepts, including ones the UI never exposes, such as
+      role, isAdmin, ownerId or balance.
+    metadata:
+      category: security
+      cwe:
+        - "CWE-915: Improperly Controlled Modification of Dynamically-Determined Object Attributes"
+      owasp:
+        - "A01:2021 - Broken Access Control"
+      confidence: HIGH
+      vibekiller:
+        rule_id: authz.mass-assignment
+        category: broken-access-control
+        severity: high
+        confidence: likely
+        fixable_by_giver: true
+        root_cause_hint: >-
+          The write path trusts the shape of the request body instead of
+          selecting the fields it is willing to accept.
+        guidance: >-
+          Pick the permitted fields explicitly before writing, for example
+          const { title, body } = req.body, and never pass the request body
+          through to an update or create call.
+    pattern-either:
+      - pattern: '$M.update({ ...$REQ.body }, ...)'
+      - pattern: '$M.update($REQ.body, ...)'
+      - pattern: '$M.create({ ...$REQ.body })'
+      - pattern: '$M.create($REQ.body)'
+      - pattern: 'new $M($REQ.body)'
+      - pattern: '$M.findByIdAndUpdate($ID, $REQ.body, ...)'
+      - pattern: '$M.findOneAndUpdate($Q, $REQ.body, ...)'
+      - pattern: 'Object.assign($TARGET, $REQ.body)'
+
+  - id: authorization-decided-client-side
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: >-
+      A role or permission read from a client-supplied payload is being used to
+      make an access decision. Anything the client sends can be changed by the
+      client; the role has to come from the server's own record of the session.
+    metadata:
+      category: security
+      cwe:
+        - "CWE-602: Client-Side Enforcement of Server-Side Security"
+      owasp:
+        - "A01:2021 - Broken Access Control"
+      confidence: MEDIUM
+      vibekiller:
+        rule_id: authz.client-supplied-role
+        category: broken-access-control
+        severity: high
+        confidence: likely
+        fixable_by_giver: true
+        root_cause_hint: >-
+          The authorization decision reads its input from the request rather
+          than from server-side session state.
+        guidance: >-
+          Load the principal's role from the database or the verified session
+          on every request, and ignore any role, permission or tenant field
+          present in the request body, query or headers.
+    pattern-either:
+      - pattern: 'if ($REQ.body.role === ...) { ... }'
+      - pattern: 'if ($REQ.body.isAdmin) { ... }'
+      - pattern: 'if ($REQ.query.role === ...) { ... }'
+      - pattern: 'if ($REQ.headers[...] === "admin") { ... }'
+      - patterns:
+          - pattern-inside: |
+              if (<... $REQ.body.$FIELD ...>) { ... }
+          - metavariable-regex:
+              metavariable: $FIELD
+              regex: '^(role|roles|isAdmin|is_admin|admin|permission|permissions|scope|scopes|tenant|tenantId)$'
+          - focus-metavariable: $FIELD
