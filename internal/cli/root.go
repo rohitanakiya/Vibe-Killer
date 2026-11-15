@@ -21,10 +21,18 @@ import (
 // Version is overridden at build time with -ldflags, but the value here is
 // not a placeholder: `go install <module>@vX.Y.Z` passes no ldflags, so for
 // anyone who installs rather than builds, this constant IS the reported
-// version. It is also stamped into every findings.json, which is what lets a
-// report be traced back to the code that produced it -- so it has to match
-// the tag, and it has to be bumped in the commit the tag points at.
-var Version = "0.1.0"
+// version. It is also stamped into every findings.json and into the
+// User-Agent sent to the operator's own instance, which is what lets a report
+// be traced back to the code that produced it.
+//
+// Hence the -dev suffix, and the release ritual it implies. Between releases
+// this carries -dev so that a report from an unreleased build cannot be
+// mistaken for one from the release it follows -- which matters here more
+// than in most projects, because findings carry forward across runs and a
+// regression is argued from the history of which build saw what. At release
+// time, one commit sets this to the bare version, the tag points at that
+// commit, and the next commit restores -dev.
+var Version = "0.2.0-dev"
 
 // Exit codes. These are the CLI's contract with a CI pipeline, so they are
 // deliberately few and stable.
