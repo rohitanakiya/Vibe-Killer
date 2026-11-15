@@ -80,17 +80,21 @@ jobs:
         run: go test -timeout 15m ./...
 
   race:
-    name: race detector (advisory)
+    name: race detector
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # Advisory until it has been green once, and this line is the only thing
-    # to change after that. The reason is specific rather than cautious: the
-    # race detector needs cgo and a C toolchain, the machine this workflow was
-    # written on has neither (CGO_ENABLED=0, no gcc), so unlike every other job
-    # here it was never run before being committed. A job with no verified
-    # baseline should report, not gate -- if it finds something, that is a real
-    # bug worth a real fix, not a reason to block an unrelated push.
-    continue-on-error: true
+    # This job gates, where the other three were trusted to from the start.
+    # It was introduced advisory for one reason -- the race detector needs cgo
+    # and a C toolchain, and the machine it was written on has neither
+    # (CGO_ENABLED=0, no gcc), so it was the only job here never run before
+    # being committed. It passed in 140s on its first run, which is the
+    # baseline it was waiting for.
+    #
+    # Promoting it is safe in a way that is specific to this tool rather than
+    # generally true of CI: the race detector reports races it actually
+    # observed, so it does not go red without a real one. Its unreliability
+    # runs the other way -- it can miss a race that is present -- and a false
+    # negative costs a quiet pass, not a blocked push.
     steps:
       - uses: actions/checkout@v7
 
