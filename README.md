@@ -1,5 +1,7 @@
 # Vibe Killer
 
+[![CI](https://github.com/rohitanakiya/Vibe-Killer/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/rohitanakiya/Vibe-Killer/actions/workflows/ci.yml)
+
 A self-hosted security scanner for applications you own. It reads your
 repository and, optionally, exercises a running instance of the same
 application on a host you declare, looking for the weaknesses that
