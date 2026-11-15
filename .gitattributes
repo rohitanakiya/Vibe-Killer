@@ -1,0 +1,43 @@
+# Normalize line endings in the repository, regardless of each contributor's
+# core.autocrlf setting.
+#
+# Without this file, whoever commits decides the stored line endings, and the
+# next contributor on a different platform sees every line of a file they did
+# not touch as modified. That is not cosmetic here: a scanner's value depends
+# on `git diff` between two scans being readable, and the fixtures are
+# deliberately in two different ecosystems, so cross-platform contributors are
+# the expected case rather than an edge one.
+#
+# Text is stored as LF and checked out as each platform prefers.
+* text=auto eol=lf
+
+# Go tooling writes and verifies these; never let a filter near them.
+go.sum  -text
+go.mod  text eol=lf
+
+# Semgrep rule packs are matched by the embedded engine. Keep them LF so a
+# pattern never depends on the platform the pack was committed from.
+*.yaml  text eol=lf
+*.yml   text eol=lf
+
+# The runtime agents are printed to a terminal for the operator to paste into
+# their own application, so they must not arrive carrying stray carriage
+# returns.
+internal/runtime/agents/*  text eol=lf
+
+# Binary and generated content: no end-of-line conversion, no diffing.
+*.png   binary
+*.jpg   binary
+*.gif   binary
+*.ico   binary
+*.pdf   binary
+*.exe   binary
+*.db    binary
+
+# Lockfiles are machine-written; keep them out of review diffs.
+fixtures/*/package-lock.json  -diff linguist-generated
+
+# Make GitHub's language stats describe the tool, not its test inputs. The
+# fixtures are deliberately vulnerable Node and Python apps; left unmarked
+# they make a Go project look like a JavaScript one.
+fixtures/**  linguist-vendored
