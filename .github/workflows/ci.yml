@@ -285,7 +285,7 @@ jobs:
           PY
 
   dynamic:
-    name: dynamic (live fixture)
+    name: dynamic (${{ matrix.stack }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # Read-only like the rest. Nothing here reaches outside the runner: the
@@ -293,6 +293,15 @@ jobs:
     # authorized_targets, which is the list the scope guard enforces.
     permissions:
       contents: read
+    # One leg per stack rather than one job running all three. The endpoint
+    # checks are stack-agnostic by design -- they probe HTTP -- so what each
+    # leg actually tests is a different adapter handing them routes, and a
+    # failure should name the stack it belongs to. fail-fast off for the same
+    # reason: if Express breaks, the FastAPI result is still worth having.
+    strategy:
+      fail-fast: false
+      matrix:
+        stack: [flask, express, fastapi]
     steps:
       - uses: actions/checkout@v7
 
@@ -301,29 +310,33 @@ jobs:
           go-version-file: go.mod
           check-latest: true
 
-      # 3.12 rather than the newest, and the fixture is the reason. Its pins
-      # are deliberately old so the dependency check finds advisories for
+      # 3.12 rather than the newest, and the Flask fixture is the reason. Its
+      # pins are deliberately old so the dependency check finds advisories for
       # them, and Werkzeug 2.0.1 calls ast.Str, which Python removed after
-      # 3.12. The pins are the point of that fixture, so the interpreter
-      # moves instead.
+      # 3.12. The pins are the point of that fixture, so the interpreter moves
+      # instead.
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
-      # This is the job that asks a real server. Everything else tests the
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      # These are the jobs that ask a real server. Everything else tests the
       # endpoint checks against httptest handlers written in Go -- which
       # proves the check against our own idea of the application and nothing
       # further. The Django extractor had exactly that shape of hole: the code
       # looked right, the tests agreed with it, and nothing had asked Django.
       #
-      # Two runs, and the second one carries the weight. `confidence:
+      # Two runs per stack, and the second carries the weight. `confidence:
       # confirmed` is documented as reserved for a finding that was re-run
       # against the instance, so zero confirmed findings against corrected
       # code is the claim worth pinning -- while still allowing a heuristic
-      # finding at `likely`, which the patched fixture does produce for an
-      # endpoint that really is anonymous.
-      - name: Reproduce against the vulnerable fixture
-        run: bash scripts/dynamic-check.sh vulnerable
+      # finding at `likely`, which the patched fixtures do produce for
+      # endpoints that really are anonymous.
+      - name: Reproduce against ${{ matrix.stack }}-vulnerable
+        run: bash scripts/dynamic-check.sh ${{ matrix.stack }} vulnerable
 
-      - name: Confirm nothing against the patched fixture
-        run: bash scripts/dynamic-check.sh patched
+      - name: Confirm nothing against ${{ matrix.stack }}-patched
+        run: bash scripts/dynamic-check.sh ${{ matrix.stack }} patched

@@ -1,10 +1,23 @@
 # Deliberately vulnerable FastAPI fixture for Vibe Killer's test suite.
 # The pinned versions are old on purpose: the dependency check should find
-# published advisories for them.
-fastapi==0.68.0
-starlette==0.14.2
-pydantic==1.8.1
-python-multipart==0.0.5
+# published advisories for them. It does -- fastapi, python-multipart, PyJWT
+# and requests all carry some at these pins.
+#
+# They also have to be installable and runnable, and until the dynamic job
+# tried it they were neither. This file pinned fastapi 0.68.0 with
+# pydantic 1.8.1, which pip cannot resolve at all because fastapi 0.68.0
+# excludes exactly that pydantic; and no pydantic 1.x can run this fixture,
+# whose model uses `model_config` and `model_dump` -- pydantic 2 APIs. Nor can
+# fastapi 0.68.0 run on Python 3.12, which changed the typing internals it
+# calls. So the fixture had never been started by anything, and the file
+# described an application that could not exist.
+#
+# 0.108.0 is the trade: old enough to carry CVE-2024-24762 and to pull a
+# vulnerable starlette, new enough to import on a current interpreter with the
+# pydantic 2 the fixture's code is written against.
+fastapi==0.108.0
+pydantic==2.5.3
+python-multipart==0.0.6
 PyJWT==1.7.1
 requests==2.25.1
-uvicorn==0.15.0
+uvicorn==0.25.0

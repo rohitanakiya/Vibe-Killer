@@ -30,6 +30,24 @@ from pydantic import BaseModel
 
 app = FastAPI(title="Vibe Killer FastAPI fixture (patched)")
 
+
+# FIXED: response hardening headers, set once for every route.
+#
+# This was the one weakness in this fixture that survived being "patched", and
+# it survived because nothing had ever asked this application over HTTP. Its
+# Flask and Express twins have set these headers since they were written; the
+# static rules cannot see a missing header, so the omission was invisible to
+# every test that read the file. scripts/dynamic-check.sh started the fixture
+# and misconfig.missing-security-headers reported it immediately.
+@app.middleware("http")
+async def add_security_headers(request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Content-Security-Policy"] = "default-src 'self'"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return response
+
 # FIXED: the signing secret comes from the environment, so the repository does
 # not contain it and rotating it does not need a deploy of new code.
 JWT_SECRET = os.environ["FIXTURE_JWT_SECRET"]

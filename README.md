@@ -643,27 +643,39 @@ what made the gap measurable. All four report now, each pinned to a line in
 The endpoint checks are tested two ways, and the difference matters. Most of
 the suite points them at in-process `httptest` handlers, which is hermetic —
 no `npm install`, no ports — and proves the check's logic against this
-repository's own idea of how a vulnerable app answers. CI also runs
-`scripts/dynamic-check.sh`, which installs the Flask fixture's pinned
-dependencies, starts it, and runs a real `--target` scan against it:
+repository's own idea of how a vulnerable app answers. CI also runs `scripts/dynamic-check.sh`, once per stack and once per side,
+which installs that fixture's own pinned dependencies, starts it, and runs a
+real `--target` scan against it:
 
 ```
-findings=62  dast=9  confirmed=7  failed_checks=0
+flask     confirmed=7   patched: confirmed=0
+express   confirmed=6   patched: confirmed=0
+fastapi   confirmed=4   patched: confirmed=0
 ```
 
-Seven findings reproduced against a live server — the IDOR naming the seeded
-canary record it read across a user boundary, the unprotected endpoint, the
-SQL differential, the reflected CORS, the verbose error. The same script then
-runs against `flask-patched` and requires **zero confirmed findings**, which
-is the assertion that matters: `confidence: confirmed` is reserved for a
-finding that was re-run, so nothing may earn it against corrected code. A
-heuristic finding at `likely` is still allowed there, and one appears —
-`/api/session` really does answer anonymous callers in the patched fixture, by
-design.
+Findings reproduced against a live server — the IDOR naming the seeded canary
+record it read across a user boundary, the unprotected endpoint, the SQL
+differential, the reflected CORS, the verbose error. Then the patched twin,
+which is the assertion that matters: **zero confirmed findings**.
+`confidence: confirmed` is reserved for a finding that was re-run, so nothing
+may earn it against corrected code. A heuristic finding at `likely` is still
+allowed there and some appear — `/api/session` really does answer anonymous
+callers in the patched fixtures, by design.
 
-Until that job existed, no test and no CI step had ever started a fixture.
+Running three stacks is not repetition. The endpoint checks are
+stack-agnostic: they probe HTTP. What differs per stack is the adapter handing
+them routes, so this is the only thing that tests Express's and FastAPI's
+route extraction against a server rather than against a parser — FastAPI's
+`APIRouter` prefix resolution included, which until now had only ever been
+read.
+
+Until these jobs existed, no test and no CI step had ever started a fixture.
 The dynamic layer was the part of this tool with the most confident language
-in its output and the least evidence behind it. The rule-pack behaviour test drives real
+in its output and the least evidence behind it, and starting the fixtures
+found three things no amount of reading them would have: `fastapi-vulnerable`
+pinned a dependency set pip cannot resolve and an application that cannot
+import, `fastapi-patched` had never set the security headers its Flask and
+Express twins set, and `express-patched` has no lockfile where its twin does. The rule-pack behaviour test drives real
 Semgrep and skips cleanly when it is not installed; the pack's structure is
 validated without it.
 
