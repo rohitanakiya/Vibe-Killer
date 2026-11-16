@@ -618,3 +618,31 @@ func TestStringListToleratesBothShapes(t *testing.T) {
 		t.Errorf("an unexpected shape should degrade to empty, not error: %v", err)
 	}
 }
+
+func TestNormalizeExcludeDropsDirectoryGlobs(t *testing.T) {
+	cases := []struct{ in, want string }{
+		// The spelling that was worse than writing nothing.
+		{"node_modules/**", "node_modules"},
+		// The spelling that pruned a whole tree.
+		{"fixtures/*/node_modules/**", "fixtures/*/node_modules"},
+		{"**/node_modules/**", "**/node_modules"},
+		{"dir/**/*", "dir"},
+		{"./node_modules/**", "node_modules"},
+		{"runs/", "runs"},
+		// Spellings that already worked are left alone.
+		{"node_modules", "node_modules"},
+		{"**/node_modules", "**/node_modules"},
+		{"vibekiller.exe", "vibekiller.exe"},
+		{"*.min.js", "*.min.js"},
+		// Windows separators, since an operator on Windows may write them.
+		{`node_modules\**`, "node_modules"},
+		// Nothing to exclude.
+		{"  ", ""},
+	}
+
+	for _, tc := range cases {
+		if got := normalizeExclude(tc.in); got != tc.want {
+			t.Errorf("normalizeExclude(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}

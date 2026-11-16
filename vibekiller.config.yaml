@@ -65,10 +65,19 @@ scanners:
     disabled: false
 
 # Paths that are not application code. The fixtures' installed dependencies
-# are excluded so a scan of this repo measures this repo.
+# are excluded so a scan of this repo measures this repo; the fixtures
+# themselves are deliberately in scope, since reporting their weaknesses is the
+# demonstration.
+#
+# Bare names rather than "fixtures/*/node_modules/**". That pattern pruned the
+# whole fixtures tree, so a scan of this repository used to return zero
+# findings and nothing said why.
 exclude:
-  - "fixtures/*/node_modules/**"
-  - "runs/**"
+  - "node_modules"
+  # Rule-behaviour fixtures, not an application: every weakness in there is
+  # pinned to a line by rules/testdata's own annotations.
+  - "testdata"
+  - "runs"
   - "vibekiller.exe"
 
 # A scan exits non-zero when an open finding is at or above this severity.

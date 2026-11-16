@@ -183,9 +183,16 @@ func Defaults() Config {
 		},
 		Runtime:           RuntimeConfig{Enabled: false, ProxyPort: 18080},
 		SeverityThreshold: finding.SeverityHigh,
+		// Bare directory names, not "node_modules/**". A trailing /** is the
+		// natural thing to write and Semgrep does not act on it the way it
+		// reads: naming node_modules in a pattern that matches nothing turned
+		// off Semgrep's own default skip, so this list used to be the reason a
+		// scan of a Node project read its entire dependency tree. See
+		// normalizeExclude in internal/scanners/semgrep.go for the
+		// measurements.
 		Exclude: []string{
-			"node_modules/**", "vendor/**", ".git/**", "dist/**", "build/**",
-			".venv/**", "venv/**", "__pycache__/**", "target/**",
+			"node_modules", "vendor", ".git", "dist", "build",
+			".venv", "venv", "__pycache__", "target",
 		},
 	}
 }

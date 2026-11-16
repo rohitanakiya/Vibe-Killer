@@ -289,3 +289,27 @@ func TestResolvedRepoPathIsRelativeToTheConfigFile(t *testing.T) {
 		t.Errorf("ResolvedRepoPath() = %q, want %q", got, want)
 	}
 }
+
+// An exclude pattern ending in a directory glob does not mean what it looks
+// like, so the defaults are not allowed to be written that way.
+//
+// Semgrep does not act on `node_modules/**` as a prefix: the pattern matches
+// nothing, and naming the directory in it turns off Semgrep's own default skip
+// for it. The measured effect on a fixture with 81 packages installed was 17
+// extra findings inside node_modules that writing no pattern at all would have
+// avoided. normalizeExclude in internal/scanners/semgrep.go rewrites an
+// operator's pattern for the same reason; this keeps the shipped defaults from
+// needing the rewrite in the first place.
+func TestDefaultExcludesAreNotWrittenAsDirectoryGlobs(t *testing.T) {
+	patterns := Defaults().Exclude
+	if len(patterns) == 0 {
+		t.Fatal("there are no default excludes; a scan would read node_modules and vendor")
+	}
+
+	for _, p := range patterns {
+		if strings.HasSuffix(p, "/**") || strings.HasSuffix(p, "/*") {
+			t.Errorf("default exclude %q ends in a directory glob; "+
+				"write the bare name, which Semgrep matches at any depth", p)
+		}
+	}
+}

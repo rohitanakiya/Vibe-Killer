@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/rohitanakiya/Vibe-Killer/internal/finding"
@@ -149,7 +150,9 @@ func (s *Semgrep) Run(ctx context.Context, sc ScanContext) ([]finding.Finding, [
 		args = append(args, "--config", c)
 	}
 	for _, ex := range sc.Exclude {
-		args = append(args, "--exclude", ex)
+		if ex = normalizeExclude(ex); ex != "" {
+			args = append(args, "--exclude", ex)
+		}
 	}
 	args = append(args, ".")
 
@@ -172,6 +175,47 @@ func (s *Semgrep) Run(ctx context.Context, sc ScanContext) ([]finding.Finding, [
 		return nil, res.Stdout, parseErr
 	}
 	return fs, res.Stdout, nil
+}
+
+// normalizeExclude rewrites an exclude pattern into the form Semgrep actually
+// acts on.
+//
+// A `dir/**` pattern is the one every .gitignore-trained operator writes, and
+// against Semgrep it is worse than writing nothing. Measured on
+// fixtures/express-vulnerable, which has 81 packages installed:
+//
+//	(no --exclude)                      17 findings,  0 inside node_modules
+//	--exclude node_modules/**           34 findings, 17 inside node_modules
+//	--exclude node_modules              17 findings,  0 inside node_modules
+//
+// Semgrep skips node_modules by default, and naming it in a pattern that
+// matches nothing switched that default off: the pack's own default exclude
+// list was the reason a scan of any Node project read its whole dependency
+// tree and reported third-party code under rule ids about the operator's own.
+//
+// A longer prefix fails the other way. This repository's committed config said
+// `fixtures/*/node_modules/**`, and a scan of the repository with it returned
+// zero findings -- the whole fixtures tree was pruned. The self-scan was empty
+// and nothing said so.
+//
+// Dropping the trailing /** or /* fixes both, and every other spelling tested
+// (`node_modules`, `node_modules/`, `node_modules/*`, `**/node_modules`,
+// `./node_modules/**`) already behaved correctly, so the rewrite is only ever
+// turning a broken pattern into a working one. A pattern with no slash matches
+// that path component at any depth, which is what the operator meant.
+func normalizeExclude(pattern string) string {
+	p := strings.TrimSpace(filepath.ToSlash(pattern))
+	p = strings.TrimPrefix(p, "./")
+
+	// Repeatedly, so that `dir/**/*` collapses too.
+	for {
+		shorter := strings.TrimSuffix(strings.TrimSuffix(p, "/**"), "/*")
+		if shorter == p {
+			break
+		}
+		p = shorter
+	}
+	return strings.TrimSuffix(p, "/")
 }
 
 // parse converts Semgrep JSON into findings.
