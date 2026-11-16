@@ -233,8 +233,21 @@ validator rejects any other value.
 framework. Detection, route enumeration, locating the auth layer, reading
 dependency manifests and finding secret usage all live behind a
 `StackAdapter` interface (`internal/adapters`). Adding a stack is a new
-adapter, never a core change. Node/Express and Python/Flask are implemented;
+adapter, never a core change. The Node and Python adapters are implemented;
 generic checks (dependencies, secrets, headers, CORS) run stack-independently.
+
+Route extraction is where that interface is most and least complete. Express,
+Flask and FastAPI have real extractors. Django and Next.js are recognized by
+name -- from `manage.py` and from the `next` dependency -- but nothing reads
+`urlpatterns` or `app/api` yet, so they map zero routes.
+
+That gap used to be invisible, which made it worse than the gap itself. A
+detected framework with an empty route list still satisfied the surface gate,
+so every endpoint check ran against nothing, found nothing, and the scan
+exited `0`: a clean report that meant "no endpoint was ever exercised" while
+reading exactly like "this application is sound". An empty route list is now a
+skip that names the framework, so a scan of a Django or Next.js app states
+plainly that it covered the static, dependency and secret layers only.
 
 Route templates are normalized on the way in, so Express's `:id`, Flask's
 `<int:id>` and FastAPI's `{id}` all become `{id}`. That is what lets a static

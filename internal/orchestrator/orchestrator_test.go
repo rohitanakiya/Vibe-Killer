@@ -13,6 +13,7 @@ import (
 	"github.com/rohitanakiya/Vibe-Killer/internal/config"
 	"github.com/rohitanakiya/Vibe-Killer/internal/finding"
 	"github.com/rohitanakiya/Vibe-Killer/internal/run"
+	"github.com/rohitanakiya/Vibe-Killer/internal/surface"
 )
 
 // stubCheck is a check whose behaviour the test controls.
@@ -444,5 +445,37 @@ func TestCheckErrorStringNamesTheRule(t *testing.T) {
 	e := CheckError{RuleID: "a.rule", Err: errors.New("boom")}
 	if !strings.Contains(e.String(), "a.rule") || !strings.Contains(e.String(), "boom") {
 		t.Errorf("String() = %q", e.String())
+	}
+}
+
+// The skip has to reach the report, not merely the gate. An operator learns
+// what went unchecked from the report, and for a framework whose routes this
+// tool cannot extract that line is the only signal they get that the endpoint
+// layer covered nothing.
+func TestSurfaceWithNoRoutesIsReportedAsASkip(t *testing.T) {
+	env := testEnv(t)
+	env.Surface = &surface.Surface{Stack: surface.Stack{Language: "python", Framework: "django"}}
+	o := New(Options{Workers: 2})
+
+	needsSurface := meta("a.endpoint", check.LayerEndpoint)
+	needsSurface.NeedsSurface = true
+
+	checks := []check.Check{
+		&stubCheck{meta: needsSurface},
+		&stubCheck{meta: meta("b.static", check.LayerStatic), findings: []finding.Finding{validFinding("b.static")}},
+	}
+
+	report, err := o.Run(context.Background(), checks, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Skipped) != 1 || report.Skipped[0].RuleID != "a.endpoint" {
+		t.Fatalf("skipped = %v, want exactly the check that needs routes", report.Skipped)
+	}
+	if r := report.Skipped[0].Reason; !strings.Contains(r, "django") || !strings.Contains(r, "no routes") {
+		t.Errorf("skip reason = %q, want it to name the framework and the empty route list", r)
+	}
+	if report.Ran != 1 {
+		t.Errorf("ran = %d, want only the check that does not need routes", report.Ran)
 	}
 }

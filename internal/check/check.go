@@ -161,8 +161,29 @@ func CanRun(m Meta, env *Env) (bool, string) {
 		}
 	}
 
-	if m.NeedsSurface && env.Surface == nil {
-		return false, "the application surface was not mapped"
+	if m.NeedsSurface {
+		if env.Surface == nil {
+			return false, "the application surface was not mapped"
+		}
+
+		// A mapped surface carrying no routes is the most misleading state
+		// available to these checks, and a nil check does not catch it. Every
+		// check that declares NeedsSurface works by requesting an endpoint, so
+		// against an empty route list each one runs, finds nothing, and reports
+		// nothing -- and the scan exits 0 having exercised no endpoint at all.
+		// In the report and in the exit code that is indistinguishable from an
+		// application that was checked and found sound, which is the one
+		// outcome this tool must never produce.
+		//
+		// The state is real rather than hypothetical: an adapter can recognize
+		// a framework by name and still have no extractor for its routing.
+		// Django and Next.js are both detected today with no urlpatterns or
+		// app/api support behind them, so the stack gets named confidently in
+		// the report while the endpoint layer silently covers nothing. Saying
+		// so is what the skip list is for.
+		if len(env.Surface.Routes) == 0 {
+			return false, noRoutesReason(env.Surface.Stack)
+		}
 	}
 
 	// A runtime check needs the agent to be reporting, not merely enabled.
@@ -214,6 +235,23 @@ func CanRun(m Meta, env *Env) (bool, string) {
 	}
 
 	return true, ""
+}
+
+// noRoutesReason explains an empty route list in terms of what was actually
+// detected, because the operator's next move differs by case: a stack nothing
+// recognized is a configuration or layout problem at their end, while a stack
+// that was recognized and still yielded no routes is a gap in this tool.
+func noRoutesReason(st surface.Stack) string {
+	switch {
+	case st.Framework != "":
+		return fmt.Sprintf("no routes were extracted from the repository even though %s "+
+			"was detected, so this check has no endpoint to exercise", st.Framework)
+	case st.Language != "":
+		return fmt.Sprintf("no routes were extracted from the repository and no framework "+
+			"was recognized in the %s code, so this check has no endpoint to exercise", st.Language)
+	default:
+		return "no routes were extracted from the repository, so this check has no endpoint to exercise"
+	}
 }
 
 // Registry holds the available checks, keyed by rule id.
