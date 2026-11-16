@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"path/filepath"
 	"strings"
 
 	"github.com/rohitanakiya/Vibe-Killer/internal/finding"
@@ -203,8 +202,13 @@ func (s *Semgrep) Run(ctx context.Context, sc ScanContext) ([]finding.Finding, [
 // `./node_modules/**`) already behaved correctly, so the rewrite is only ever
 // turning a broken pattern into a working one. A pattern with no slash matches
 // that path component at any depth, which is what the operator meant.
+// Backslashes are converted unconditionally rather than through
+// filepath.ToSlash, which is a no-op off Windows. The config file is committed
+// and the same value is read on whatever platform runs the scan, so a pattern
+// an operator wrote on Windows has to mean the same thing in Linux CI. Semgrep
+// matches these globs with forward slashes everywhere.
 func normalizeExclude(pattern string) string {
-	p := strings.TrimSpace(filepath.ToSlash(pattern))
+	p := strings.ReplaceAll(strings.TrimSpace(pattern), `\`, "/")
 	p = strings.TrimPrefix(p, "./")
 
 	// Repeatedly, so that `dir/**/*` collapses too.

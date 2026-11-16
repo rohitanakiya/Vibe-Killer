@@ -634,7 +634,11 @@ func TestNormalizeExcludeDropsDirectoryGlobs(t *testing.T) {
 		{"**/node_modules", "**/node_modules"},
 		{"vibekiller.exe", "vibekiller.exe"},
 		{"*.min.js", "*.min.js"},
-		// Windows separators, since an operator on Windows may write them.
+		// Windows separators, and the expectation is the same on every
+		// platform on purpose. filepath.ToSlash is a no-op off Windows, so
+		// using it here made this case pass on Windows and fail on Linux --
+		// which is exactly the asymmetry that matters, since the config file
+		// is committed on one platform and read by CI on another.
 		{`node_modules\**`, "node_modules"},
 		// Nothing to exclude.
 		{"  ", ""},
