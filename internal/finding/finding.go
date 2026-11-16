@@ -8,6 +8,23 @@ import "fmt"
 // SchemaVersion is the version of schema/finding.schema.json this model matches.
 const SchemaVersion = "1.0"
 
+// DocumentSchemaVersion is the version of the findings.json envelope,
+// Document, which is versioned separately from the findings it carries.
+//
+// The two began equal and are now deliberately apart. Adding the optional
+// skipped array changed the envelope and no finding field, and the
+// per-finding version is pinned by "const": "1.0" in
+// schema/finding.schema.json -- so moving that value would invalidate every
+// document ever written, to describe a change that did not touch a finding.
+const DocumentSchemaVersion = "1.1"
+
+// SupportedDocumentSchemaVersions are the envelope versions this build reads.
+//
+// Older run directories stay usable, which is what keeps `vibekiller diff`
+// working across an upgrade. A 1.0 document simply has no skipped list, and
+// the diff is explicit about what it cannot conclude from one.
+var SupportedDocumentSchemaVersions = []string{"1.0", DocumentSchemaVersion}
+
 // Severity ranks how bad a finding is if exploited.
 type Severity string
 
@@ -258,6 +275,47 @@ type Finding struct {
 	LastSeenRun  string `json:"last_seen_run,omitempty"`
 }
 
+// SkippedCheck records a check that did not run, so that a consumer of
+// findings.json can tell "this layer found nothing" from "this layer never
+// ran". Without it, zero findings is ambiguous in the one direction that
+// matters, and a reader acting on the file -- `vibekiller diff` today, Vibe
+// Giver later -- concludes the application is clean.
+//
+// It mirrors SARIF's invocations[].toolExecutionNotifications so one source
+// feeds both serializers.
+type SkippedCheck struct {
+	CheckID string `json:"check_id"`
+	Layer   string `json:"layer,omitempty"`
+	Reason  string `json:"reason"`
+}
+
+// SourceForLayer maps a check's layer to the finding source that layer
+// produces, which is how a skip is connected to the findings it suppressed.
+//
+// The mapping is 1:1 and verified against what the producers actually emit,
+// rather than inferred from the names: the endpoint checks all emit dast and
+// the exposure check emits blast-radius, neither of which matches its layer
+// string. The second return value is false for an unknown layer, so a future
+// layer fails to match rather than silently matching the wrong source.
+func SourceForLayer(layer string) (Source, bool) {
+	switch layer {
+	case "static":
+		return SourceSAST, true
+	case "endpoint":
+		return SourceDAST, true
+	case "runtime":
+		return SourceRuntime, true
+	case "deps":
+		return SourceDeps, true
+	case "secrets":
+		return SourceSecrets, true
+	case "exposure":
+		return SourceBlastRadius, true
+	default:
+		return "", false
+	}
+}
+
 // Document is the top-level shape of runs/<id>/findings.json.
 type Document struct {
 	SchemaVersion string    `json:"schema_version"`
@@ -268,6 +326,11 @@ type Document struct {
 	Target        string    `json:"target,omitempty"`
 	Counts        Counts    `json:"counts"`
 	Findings      []Finding `json:"findings"`
+
+	// Skipped is every check that did not run, with the reason. It is
+	// omitted when empty so a run in which everything ran looks exactly as
+	// it did before this field existed.
+	Skipped []SkippedCheck `json:"skipped,omitempty"`
 }
 
 // Counts summarizes a run for quick CI consumption.

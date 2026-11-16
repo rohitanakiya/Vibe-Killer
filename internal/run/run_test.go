@@ -228,7 +228,7 @@ func TestWriteFindingsRefusesContractViolations(t *testing.T) {
 	bad := validFinding("handlerA")
 	bad.Confidence = finding.ConfidenceConfirmed // confirmed with no reproduction
 
-	err := r.WriteFindings([]finding.Finding{bad})
+	err := r.WriteFindings([]finding.Finding{bad}, nil)
 	if err == nil {
 		t.Fatal("findings.json was written with a contract violation in it")
 	}
@@ -247,7 +247,7 @@ func TestWriteAndLoadFindings(t *testing.T) {
 	})
 
 	in := []finding.Finding{validFinding("handlerA"), validFinding("handlerB")}
-	if err := r.WriteFindings(in); err != nil {
+	if err := r.WriteFindings(in, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := r.Close(); err != nil {
@@ -287,7 +287,7 @@ func TestWriteAndLoadFindings(t *testing.T) {
 func TestWritesAreAtomic(t *testing.T) {
 	r, _ := create(t, Meta{RunID: "20260101-000000-aaa"})
 
-	if err := r.WriteFindings([]finding.Finding{validFinding("handlerA")}); err != nil {
+	if err := r.WriteFindings([]finding.Finding{validFinding("handlerA")}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := r.Close(); err != nil {
@@ -410,7 +410,7 @@ func TestListAndPrevious(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := r.WriteFindings(nil); err != nil {
+		if err := r.WriteFindings(nil, nil); err != nil {
 			t.Fatal(err)
 		}
 		if err := r.Close(); err != nil {
@@ -466,4 +466,94 @@ func TestCloseIsSafeTwice(t *testing.T) {
 	}
 	// And logging after close must not panic either.
 	r.Log("after.close", map[string]any{"x": 1})
+}
+
+// findings.json is the machine-readable contract, and until it could say a
+// check had not run, zero findings for a layer was indistinguishable from a
+// layer that ran clean. `vibekiller diff` read it the wrong way and reported
+// fixes that had not happened.
+func TestFindingsDocumentCarriesSkippedChecks(t *testing.T) {
+	r, _ := create(t, Meta{RunID: "20260101-000000-aaa"})
+	defer func() { _ = r.Close() }()
+
+	skips := []finding.SkippedCheck{{
+		CheckID: "engine.osv-scanner",
+		Layer:   "deps",
+		Reason:  "osv-scanner is not installed or not on PATH",
+	}}
+	if err := r.WriteFindings([]finding.Finding{validFinding("handlerA")}, skips); err != nil {
+		t.Fatal(err)
+	}
+
+	doc, err := LoadFindings(r.Dir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.SchemaVersion != finding.DocumentSchemaVersion {
+		t.Errorf("schema_version = %q, want the envelope version %q", doc.SchemaVersion, finding.DocumentSchemaVersion)
+	}
+	if len(doc.Skipped) != 1 {
+		t.Fatalf("skipped = %v, want one entry", doc.Skipped)
+	}
+	got := doc.Skipped[0]
+	if got.CheckID != "engine.osv-scanner" || got.Layer != "deps" {
+		t.Errorf("skipped[0] = %+v, want the check id and layer preserved", got)
+	}
+	if !strings.Contains(got.Reason, "not installed") {
+		t.Errorf("reason = %q, want it carried through", got.Reason)
+	}
+}
+
+// A run with nothing skipped must serialize exactly as it did before the field
+// existed, so an older consumer sees no change at all.
+func TestAnEmptySkipListIsOmittedEntirely(t *testing.T) {
+	r, _ := create(t, Meta{RunID: "20260101-000000-bbb"})
+	defer func() { _ = r.Close() }()
+
+	if err := r.WriteFindings([]finding.Finding{validFinding("handlerA")}, nil); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(r.Path(FileFindings))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "skipped") {
+		t.Errorf("findings.json mentions skipped when nothing was:\n%s", b)
+	}
+}
+
+// Run directories written by an earlier build stay readable. Refusing them
+// would be a strange way to ship a change whose point is not losing
+// information about earlier runs.
+func TestLoadFindingsAcceptsTheOlderEnvelopeVersion(t *testing.T) {
+	dir := t.TempDir()
+	older := `{"schema_version":"1.0","run_id":"20260101-000000-ccc","generated_at":"2026-01-01T00:00:00Z",` +
+		`"repo_path":".","counts":{"total":0,"by_severity":{},"by_source":{},"confirmed":0},"findings":[]}`
+	if err := os.WriteFile(filepath.Join(dir, FileFindings), []byte(older), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	doc, err := LoadFindings(dir)
+	if err != nil {
+		t.Fatalf("a 1.0 document should still load: %v", err)
+	}
+	if doc.SchemaVersion != "1.0" {
+		t.Errorf("schema_version = %q", doc.SchemaVersion)
+	}
+	if doc.Skipped != nil {
+		t.Errorf("skipped = %v, want nil for a document written before the field", doc.Skipped)
+	}
+}
+
+// An unknown version is still refused, so the acceptance list stays a list and
+// not an absence of checking.
+func TestLoadFindingsStillRefusesAnUnknownEnvelopeVersion(t *testing.T) {
+	dir := t.TempDir()
+	future := `{"schema_version":"9.9","run_id":"x","counts":{"total":0,"by_severity":{},"by_source":{},"confirmed":0},"findings":[]}`
+	if err := os.WriteFile(filepath.Join(dir, FileFindings), []byte(future), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadFindings(dir); err == nil {
+		t.Fatal("a 9.9 document was accepted")
+	}
 }

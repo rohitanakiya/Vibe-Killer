@@ -117,7 +117,7 @@ func (o *Orchestrator) Run(ctx context.Context, checks []check.Check, env *check
 		m := c.Meta()
 		ok, reason := check.CanRun(m, env)
 		if !ok {
-			report.Skipped = append(report.Skipped, check.SkipReason{RuleID: m.RuleID, Reason: reason})
+			report.Skipped = append(report.Skipped, check.SkipReason{RuleID: m.RuleID, Layer: m.Layer, Reason: reason})
 			o.emit(Event{Kind: EventSkipped, RuleID: m.RuleID, Title: m.Title, Layer: m.Layer, Reason: reason})
 			if env.Run != nil {
 				env.Run.Log("check.skipped", map[string]any{
@@ -161,7 +161,7 @@ func (o *Orchestrator) Run(ctx context.Context, checks []check.Check, env *check
 				if ctx.Err() != nil {
 					mu.Lock()
 					report.Skipped = append(report.Skipped, check.SkipReason{
-						RuleID: m.RuleID, Reason: "run was cancelled before this check started",
+						RuleID: m.RuleID, Layer: m.Layer, Reason: "run was cancelled before this check started",
 					})
 					mu.Unlock()
 					continue

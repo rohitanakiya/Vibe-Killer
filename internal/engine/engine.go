@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
 	"github.com/rohitanakiya/Vibe-Killer/internal/check"
@@ -305,6 +306,11 @@ func Scan(ctx context.Context, opts ScanOptions) (*Result, error) {
 		return nil, fmt.Errorf("no checks matched the selection %v", opts.Only)
 	}
 
+	// Everything the selection left out is recorded as a skip before the
+	// orchestrator runs, and merged with the skips it produces. See
+	// deselectedSkips for why both halves are needed.
+	deselected := deselectedSkips(mode, opts.Only, selected)
+
 	recordScannerVersions(ctx, cfg, r)
 
 	orch := orchestrator.New(orchestrator.Options{
@@ -366,7 +372,12 @@ func Scan(ctx context.Context, opts ScanOptions) (*Result, error) {
 		}
 	}
 
-	if err := r.WriteFindings(merged); err != nil {
+	// One list from here on: the checks gated out by CanRun and the checks
+	// the selection never scheduled, so findings.json, the Markdown report,
+	// the terminal summary and Result.Skipped all describe the same run.
+	allSkips := mergeSkips(orchReport.Skipped, deselected)
+
+	if err := r.WriteFindings(merged, skippedChecks(allSkips)); err != nil {
 		return nil, err
 	}
 
@@ -379,7 +390,7 @@ func Scan(ctx context.Context, opts ScanOptions) (*Result, error) {
 		RunDir:       r.Dir(),
 		Findings:     merged,
 		Surface:      env.Surface,
-		Skipped:      orchReport.Skipped,
+		Skipped:      allSkips,
 		Failed:       orchReport.Failed,
 		MergeSummary: summary,
 		GateSeverity: cfg.SeverityThreshold,
@@ -404,7 +415,7 @@ func Scan(ctx context.Context, opts ScanOptions) (*Result, error) {
 	in := report.Input{
 		Meta:     result.Meta,
 		Findings: merged,
-		Skipped:  skipStrings(orchReport.Skipped),
+		Skipped:  check.GroupSkipLines(allSkips),
 		Failed:   failStrings(orchReport.Failed),
 	}
 	if env.Surface != nil {
@@ -524,10 +535,86 @@ func recordScannerVersions(ctx context.Context, cfg *config.Config, r *run.Run) 
 	r.Log("scanners.resolved", map[string]any{"used": used, "unavailable": skipped})
 }
 
-func skipStrings(in []check.SkipReason) []string {
-	out := make([]string, 0, len(in))
+// deselectedSkips records the checks a mode or an --only filter left out.
+//
+// These are not skips in the orchestrator's sense: selectChecks returns a
+// subset and the rest never reach it, so nothing was ever gated and nothing
+// was recorded. That distinction is invisible outside this function and
+// actively harmful beyond it. A --static-only run produced a findings.json
+// with an empty skip list, so every endpoint finding from an earlier run read
+// as fixed -- and "full scan locally, narrower scan in CI" is the single most
+// common way two runs differ, which made it the likeliest shape of the bug
+// rather than an edge case.
+//
+// Whether a check was filtered out before scheduling or gated out after, the
+// consumer needs the same fact: it did not run, and here is why.
+func deselectedSkips(mode Mode, only []string, selected []check.Check) []check.SkipReason {
+	ran := map[string]bool{}
+	for _, c := range selected {
+		ran[c.Meta().RuleID] = true
+	}
+
+	var out []check.SkipReason
+	for _, c := range check.Default.All() {
+		m := c.Meta()
+		if ran[m.RuleID] {
+			continue
+		}
+		out = append(out, check.SkipReason{
+			RuleID: m.RuleID,
+			Layer:  m.Layer,
+			Reason: deselectionReason(mode, only, m.Layer),
+		})
+	}
+	return out
+}
+
+// deselectionReason explains an omission in terms of the flag that caused it,
+// so the reason doubles as the instruction for including it next time.
+func deselectionReason(mode Mode, only []string, layer check.Layer) string {
+	if len(only) > 0 {
+		return "this run was limited to the checks named with --only, which did not include this one"
+	}
+	switch mode {
+	case ModeStaticOnly:
+		return fmt.Sprintf("this run was static-only, so the %s layer did not run; --static-only makes no outbound connection by design", layer)
+	default:
+		if layer == check.LayerRuntime {
+			return "runtime observation was not enabled for this run (pass --with-runtime)"
+		}
+		return fmt.Sprintf("this run did not include the %s layer", layer)
+	}
+}
+
+// mergeSkips combines the gated and deselected skips into one list, ordered by
+// rule id so a report and a findings.json do not disagree about ordering
+// between runs.
+func mergeSkips(gated, deselected []check.SkipReason) []check.SkipReason {
+	if len(gated) == 0 && len(deselected) == 0 {
+		return nil
+	}
+	out := make([]check.SkipReason, 0, len(gated)+len(deselected))
+	out = append(out, gated...)
+	out = append(out, deselected...)
+	sort.SliceStable(out, func(i, j int) bool { return out[i].RuleID < out[j].RuleID })
+	return out
+}
+
+// skippedChecks converts the orchestrator's skip list into the findings.json
+// shape. It exists so the machine-readable contract carries what the terminal
+// and the Markdown report have always shown: that a check did not run, and
+// why.
+func skippedChecks(in []check.SkipReason) []finding.SkippedCheck {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]finding.SkippedCheck, 0, len(in))
 	for _, s := range in {
-		out = append(out, s.String())
+		out = append(out, finding.SkippedCheck{
+			CheckID: s.RuleID,
+			Layer:   string(s.Layer),
+			Reason:  s.Reason,
+		})
 	}
 	return out
 }

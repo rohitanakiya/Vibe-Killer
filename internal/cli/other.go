@@ -91,9 +91,14 @@ func newDiffCmd() *cobra.Command {
 		Short: "Compare two runs: what is new, fixed or regressed",
 		Long: `Diff compares two runs by finding identity.
 
-A finding is "fixed" when it is no longer reported, which for a dynamic finding
-means it is no longer reproducible. A finding is "regressed" when it had been
-marked fixed and is reported again.
+A finding is "fixed" when it is no longer reported by a check that ran, which
+for a dynamic finding means it is no longer reproducible. A finding is
+"regressed" when it had been marked fixed and is reported again.
+
+A finding is "not re-checked" when it was open before and the check that would
+have found it did not run this time -- a missing scanner, no --target, or a
+framework whose routes cannot be extracted. Those are counted separately and
+never as fixed, because absence is only evidence when something looked.
 
 With one argument, the run is compared against the run immediately before it.`,
 		Args: cobra.RangeArgs(1, 2),

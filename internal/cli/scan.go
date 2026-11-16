@@ -4,12 +4,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"sort"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/rohitanakiya/Vibe-Killer/internal/check"
 	"github.com/rohitanakiya/Vibe-Killer/internal/engine"
 	"github.com/rohitanakiya/Vibe-Killer/internal/finding"
 	"github.com/rohitanakiya/Vibe-Killer/internal/orchestrator"
@@ -217,9 +217,7 @@ func printResult(cmd *cobra.Command, r *engine.Result) {
 	// they are the last thing read before someone decides the app is fine.
 	if len(r.Skipped) > 0 {
 		fmt.Fprintf(out, "\n%d check(s) did not run, so nothing is known about what they cover:\n", len(r.Skipped))
-		sorted := append([]string(nil), skipLines(r)...)
-		sort.Strings(sorted)
-		for _, s := range sorted {
+		for _, s := range check.GroupSkipLines(r.Skipped) {
 			fmt.Fprintf(out, "  - %s\n", s)
 		}
 	}
@@ -239,14 +237,6 @@ func printResult(cmd *cobra.Command, r *engine.Result) {
 	}
 	fmt.Fprintf(out, "Findings: %s\n", r.RunDir+string(os.PathSeparator)+run.FileFindings)
 	fmt.Fprintf(out, "Log:      %s\n", r.RunDir+string(os.PathSeparator)+run.FileLog)
-}
-
-func skipLines(r *engine.Result) []string {
-	out := make([]string, 0, len(r.Skipped))
-	for _, s := range r.Skipped {
-		out = append(out, s.String())
-	}
-	return out
 }
 
 func displayRepo(repo string) string {

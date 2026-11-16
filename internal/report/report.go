@@ -337,7 +337,8 @@ func DiffMarkdown(r *diff.Result) string {
 	fmt.Fprintf(&b, "| new | %d |\n", r.Counts.New)
 	fmt.Fprintf(&b, "| regressed | %d |\n", r.Counts.Regressed)
 	fmt.Fprintf(&b, "| still open | %d |\n", r.Counts.StillOpen)
-	fmt.Fprintf(&b, "| fixed | %d |\n\n", r.Counts.Fixed)
+	fmt.Fprintf(&b, "| fixed | %d |\n", r.Counts.Fixed)
+	fmt.Fprintf(&b, "| unchecked | %d |\n\n", r.Counts.Unchecked)
 
 	section := func(title, note string, entries []diff.Entry) {
 		if len(entries) == 0 {
@@ -357,6 +358,9 @@ func DiffMarkdown(r *diff.Result) string {
 			if e.PreviousConfidence != "" {
 				fmt.Fprintf(&b, "  - confidence changed from %s to %s\n", e.PreviousConfidence, f.Confidence)
 			}
+			if e.SkipReason != "" {
+				fmt.Fprintf(&b, "  - not re-checked: %s\n", e.SkipReason)
+			}
 		}
 		b.WriteString("\n")
 	}
@@ -365,6 +369,8 @@ func DiffMarkdown(r *diff.Result) string {
 	section("New", "", r.New)
 	section("Still open", "", r.StillOpen)
 	section("Fixed", "No longer reported by the checks that ran. For a dynamic finding this means it is no longer reproducible.", r.Fixed)
+	section("Not re-checked", "These were open in the earlier run and the check that would have found them did not run in the later one. "+
+		"Their absence is not evidence that they are fixed, so they are counted neither way.", r.Unchecked)
 
 	return b.String()
 }

@@ -405,6 +405,32 @@ line numbers and the git revision** — otherwise an unrelated edit above the
 vulnerable line would make every finding look new and the run-to-run diff would
 be worthless.
 
+The envelope carries what did **not** run. `findings.json` has an optional
+top-level `skipped` array of `{check_id, layer, reason}`, so zero findings for
+a layer is distinguishable from a layer that ran clean:
+
+```json
+"skipped": [
+  { "check_id": "engine.osv-scanner",
+    "layer": "deps",
+    "reason": "osv-scanner is not installed or not on PATH" }
+]
+```
+
+Without it the file could only be read one way, and it was read the wrong way:
+`vibekiller diff` treated any finding missing from the later run as fixed, so a
+run that skipped a layer reported every finding from it as fixed and summarised
+the result as "better". A finding whose check did not run is now counted as
+**not re-checked** — neither fixed nor still open — and `--fail-on-new` does
+not pass on a run that checked less than the one before it. Shipping a scanner
+whose "fixed" could mean "nobody looked" would have undone the point of the
+rest of this tool.
+
+The envelope is versioned separately from the findings it carries, at `1.1`,
+because that change touched no finding field. Both `1.0` and `1.1` run
+directories are readable, and the array is omitted when nothing was skipped, so
+an older consumer sees a byte-identical file.
+
 Credentials never travel in a finding. Recorded requests carry a seeded-user
 label such as `userA-token`, and credential headers are replaced with
 `<redacted>`; the contract validator rejects a finding that carries a live

@@ -99,3 +99,55 @@ func TestCanRunLeavesChecksThatDoNotNeedTheSurfaceAlone(t *testing.T) {
 		t.Fatalf("CanRun = false (%q), want a check with NeedsSurface unset to be unaffected", reason)
 	}
 }
+
+// A static-only run leaves out eleven checks for three reasons. One line per
+// check buried those three facts under repetition, so the reason is printed
+// once and names the checks it covers. findings.json keeps the per-check form,
+// where a consumer joins on the check id.
+func TestGroupSkipLinesCollapsesASharedReason(t *testing.T) {
+	shared := "this run was static-only, so the endpoint layer did not run"
+	skips := []SkipReason{
+		{RuleID: "traversal.path-escape", Layer: LayerEndpoint, Reason: shared},
+		{RuleID: "authz.unprotected-endpoint", Layer: LayerEndpoint, Reason: shared},
+		{RuleID: "idor.sequential-id-access", Layer: LayerEndpoint, Reason: shared},
+		{RuleID: "exposure.shared-trust-domain", Layer: LayerExposure, Reason: "needs 1 seeded users with tokens, found 0"},
+	}
+
+	lines := GroupSkipLines(skips)
+	if len(lines) != 2 {
+		t.Fatalf("got %d lines, want one per distinct reason:\n%s", len(lines), strings.Join(lines, "\n"))
+	}
+
+	joined := strings.Join(lines, "\n")
+	if strings.Count(joined, shared) != 1 {
+		t.Errorf("the shared reason appears %d times, want once:\n%s", strings.Count(joined, shared), joined)
+	}
+	// Collapsing must not lose which checks are covered.
+	for _, id := range []string{"traversal.path-escape", "authz.unprotected-endpoint", "idor.sequential-id-access"} {
+		if !strings.Contains(joined, id) {
+			t.Errorf("%s is not named anywhere:\n%s", id, joined)
+		}
+	}
+	// A lone skip keeps the familiar "id: reason" shape, which reads better
+	// than a group of one.
+	var lone string
+	for _, l := range lines {
+		if strings.HasPrefix(l, "exposure.shared-trust-domain: ") {
+			lone = l
+		}
+	}
+	if lone == "" {
+		t.Errorf("a single skip should stay in id-first form:\n%s", joined)
+	}
+
+	// Grouped ids are ordered, so two runs of the same scan do not produce
+	// gratuitously different reports.
+	want := "authz.unprotected-endpoint, idor.sequential-id-access, traversal.path-escape"
+	if !strings.Contains(joined, want) {
+		t.Errorf("grouped ids are not sorted, want %q in:\n%s", want, joined)
+	}
+
+	if GroupSkipLines(nil) != nil {
+		t.Error("an empty skip list should produce no lines")
+	}
+}

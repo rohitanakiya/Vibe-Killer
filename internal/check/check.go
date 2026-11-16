@@ -133,9 +133,55 @@ type Result struct {
 type SkipReason struct {
 	RuleID string
 	Reason string
+
+	// Layer is the engine the skipped check belongs to.
+	//
+	// It is carried because rule_id alone cannot connect a skip to the
+	// findings it suppressed. The scanner-backed checks are the reason:
+	// engine.osv-scanner produces findings whose rule_id is
+	// deps.known-vulnerability, so a consumer joining on rule_id would see
+	// those findings vanish and the skip of engine.osv-scanner as unrelated
+	// facts. The layer is what ties them together.
+	Layer Layer
 }
 
 func (s SkipReason) String() string { return s.RuleID + ": " + s.Reason }
+
+// GroupSkipLines renders a skip list for a human, collapsing the checks that
+// share a reason.
+//
+// One line per check is right in findings.json, where a consumer joins on the
+// check id. It is wrong in a report: a static-only run leaves out eleven
+// checks for three reasons, and printing the same sentence eleven times buries
+// the three facts someone actually needs. The reason is the information here,
+// so it appears once and names the checks it covers.
+func GroupSkipLines(skips []SkipReason) []string {
+	if len(skips) == 0 {
+		return nil
+	}
+
+	ids := map[string][]string{}
+	var order []string
+	for _, s := range skips {
+		if _, seen := ids[s.Reason]; !seen {
+			order = append(order, s.Reason)
+		}
+		ids[s.Reason] = append(ids[s.Reason], s.RuleID)
+	}
+
+	out := make([]string, 0, len(order))
+	for _, reason := range order {
+		group := ids[reason]
+		sort.Strings(group)
+		if len(group) == 1 {
+			out = append(out, group[0]+": "+reason)
+			continue
+		}
+		out = append(out, fmt.Sprintf("%s [%d checks: %s]", reason, len(group), strings.Join(group, ", ")))
+	}
+	sort.Strings(out)
+	return out
+}
 
 // CanRun decides whether a check may execute in this environment, and says why
 // not when it may not.

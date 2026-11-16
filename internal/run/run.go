@@ -14,7 +14,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -296,13 +298,13 @@ func (r *Run) WriteSurface(v any) error {
 // Every finding is validated first. A finding that violates the contract fails
 // the write rather than being emitted, because a consumer that cannot trust
 // the schema has to re-derive everything itself.
-func (r *Run) WriteFindings(fs []finding.Finding) error {
+func (r *Run) WriteFindings(fs []finding.Finding, skipped []finding.SkippedCheck) error {
 	if err := finding.ValidateAll(fs); err != nil {
 		return fmt.Errorf("refusing to write findings.json with contract violations: %w", err)
 	}
 
 	doc := finding.Document{
-		SchemaVersion: finding.SchemaVersion,
+		SchemaVersion: finding.DocumentSchemaVersion,
 		RunID:         r.id,
 		GeneratedAt:   time.Now().UTC().Format(time.RFC3339),
 		RepoPath:      r.meta.RepoPath,
@@ -310,6 +312,7 @@ func (r *Run) WriteFindings(fs []finding.Finding) error {
 		Target:        r.meta.Target,
 		Counts:        finding.Summarize(fs),
 		Findings:      fs,
+		Skipped:       skipped,
 	}
 
 	r.mu.Lock()
@@ -319,7 +322,8 @@ func (r *Run) WriteFindings(fs []finding.Finding) error {
 	if err := r.writeJSON(r.Path(FileFindings), doc); err != nil {
 		return err
 	}
-	r.Log("findings.written", map[string]any{"total": doc.Counts.Total, "confirmed": doc.Counts.Confirmed})
+	r.Log("findings.written", map[string]any{
+		"total": doc.Counts.Total, "confirmed": doc.Counts.Confirmed, "skipped": len(doc.Skipped)})
 	return nil
 }
 
@@ -416,9 +420,14 @@ func LoadFindings(dir string) (*finding.Document, error) {
 	if err := json.Unmarshal(b, &doc); err != nil {
 		return nil, fmt.Errorf("parsing %s: %w", path, err)
 	}
-	if doc.SchemaVersion != finding.SchemaVersion {
-		return nil, fmt.Errorf("%s has schema_version %q, but this build speaks %q",
-			path, doc.SchemaVersion, finding.SchemaVersion)
+	// Accept every envelope version this build knows, not just the current
+	// one. A run directory written before the skipped array existed is still
+	// readable, which is what keeps `vibekiller diff` usable across an
+	// upgrade -- and refusing it would have been a strange way to ship a
+	// change whose whole point is not losing information about old runs.
+	if !slices.Contains(finding.SupportedDocumentSchemaVersions, doc.SchemaVersion) {
+		return nil, fmt.Errorf("%s has schema_version %q, but this build reads %s",
+			path, doc.SchemaVersion, strings.Join(finding.SupportedDocumentSchemaVersions, ", "))
 	}
 	return &doc, nil
 }

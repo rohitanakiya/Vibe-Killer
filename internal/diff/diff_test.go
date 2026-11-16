@@ -238,3 +238,126 @@ func TestEntriesAreOrderedByRank(t *testing.T) {
 		t.Error("new findings are not ordered worst first")
 	}
 }
+
+// withSource builds a finding attributed to a particular engine, which is what
+// the layer half of the skip join matches on.
+func withSource(ruleID, symbol string, src finding.Source) finding.Finding {
+	out := f(ruleID, symbol, finding.SeverityHigh, finding.ConfidenceLikely, finding.StatusOpen)
+	out.Source = src
+	out.AssignID()
+	return out
+}
+
+func docWithSkips(runID string, skips []finding.SkippedCheck, findings ...finding.Finding) *finding.Document {
+	d := doc(runID, findings...)
+	d.Skipped = skips
+	return d
+}
+
+// The defect this guards: absence was read as a fix with no regard for whether
+// anything looked. A run that skipped a check reported its findings as fixed
+// and the verdict line said "better".
+func TestAFindingIsNotFixedWhenItsCheckWasSkipped(t *testing.T) {
+	open := f("idor.a", "handlerA", finding.SeverityHigh, finding.ConfidenceLikely, finding.StatusOpen)
+
+	from := doc("run-1", open)
+	to := docWithSkips("run-2", []finding.SkippedCheck{{
+		CheckID: "idor.a",
+		Layer:   "endpoint",
+		Reason:  "no running instance was given (pass --target)",
+	}})
+
+	res := Compare(from, to)
+
+	if res.Counts.Fixed != 0 {
+		t.Errorf("fixed = %d, want 0: the check never ran", res.Counts.Fixed)
+	}
+	if res.Counts.Unchecked != 1 {
+		t.Fatalf("unchecked = %d, want 1", res.Counts.Unchecked)
+	}
+	if r := res.Unchecked[0].SkipReason; !strings.Contains(r, "--target") {
+		t.Errorf("skip reason = %q, want the reason carried through", r)
+	}
+	// The status is left alone. Marking it fixed was the bug; marking it
+	// anything else would be inventing a different claim.
+	if got := res.Unchecked[0].Finding.Status; got != finding.StatusOpen {
+		t.Errorf("status = %q, want it untouched", got)
+	}
+}
+
+// A scanner's rule_id is not the rule_id of its findings: engine.osv-scanner
+// produces deps.known-vulnerability. Joining on rule_id alone would miss the
+// likeliest real case, a scanner binary absent on a CI box.
+func TestAScannerSkipIsJoinedThroughItsLayer(t *testing.T) {
+	vuln := withSource("deps.known-vulnerability", "lodash", finding.SourceDeps)
+
+	from := doc("run-1", vuln)
+	to := docWithSkips("run-2", []finding.SkippedCheck{{
+		CheckID: "engine.osv-scanner",
+		Layer:   "deps",
+		Reason:  "osv-scanner is not installed or not on PATH",
+	}})
+
+	res := Compare(from, to)
+
+	if res.Counts.Unchecked != 1 || res.Counts.Fixed != 0 {
+		t.Fatalf("unchecked = %d, fixed = %d, want 1 and 0", res.Counts.Unchecked, res.Counts.Fixed)
+	}
+	if r := res.Unchecked[0].SkipReason; !strings.Contains(r, "osv-scanner") {
+		t.Errorf("skip reason = %q, want it to name the missing scanner", r)
+	}
+}
+
+// The layer join must not swallow real fixes. When a layer is only partly
+// skipped and still produced findings, its producers evidently ran, so a
+// finding that vanished from it is a fix and must be reported as one.
+func TestAPartlySkippedLayerStillReportsRealFixes(t *testing.T) {
+	gone := withSource("dast.one", "handlerA", finding.SourceDAST)
+	stayed := withSource("dast.two", "handlerB", finding.SourceDAST)
+
+	from := doc("run-1", gone, stayed)
+	to := docWithSkips("run-2", []finding.SkippedCheck{{
+		CheckID: "misconfig.verbose-error",
+		Layer:   "endpoint",
+		Reason:  "the application surface was not mapped",
+	}}, stayed)
+
+	res := Compare(from, to)
+
+	if res.Counts.Fixed != 1 {
+		t.Errorf("fixed = %d, want 1: the endpoint layer still produced findings, so this one was really fixed", res.Counts.Fixed)
+	}
+	if res.Counts.Unchecked != 0 {
+		t.Errorf("unchecked = %d, want 0", res.Counts.Unchecked)
+	}
+}
+
+// A run directory written before the skipped array existed carries no skip
+// list. Inventing uncertainty about it would be its own dishonesty, so the
+// old reading stands.
+func TestADocumentWithNoSkipListBehavesAsBefore(t *testing.T) {
+	open := f("idor.a", "handlerA", finding.SeverityHigh, finding.ConfidenceLikely, finding.StatusOpen)
+
+	res := Compare(doc("run-1", open), doc("run-2"))
+
+	if res.Counts.Fixed != 1 || res.Counts.Unchecked != 0 {
+		t.Errorf("fixed = %d, unchecked = %d, want 1 and 0", res.Counts.Fixed, res.Counts.Unchecked)
+	}
+}
+
+// --fail-on-new gates on Improved(). Before this, a CI run that checked less
+// than the previous one passed precisely because coverage had vanished.
+func TestUncheckedFindingsBlockTheImprovedGate(t *testing.T) {
+	open := f("idor.a", "handlerA", finding.SeverityHigh, finding.ConfidenceLikely, finding.StatusOpen)
+
+	res := Compare(doc("run-1", open), docWithSkips("run-2", []finding.SkippedCheck{{
+		CheckID: "idor.a", Layer: "endpoint", Reason: "no running instance was given (pass --target)",
+	}}))
+
+	if res.Improved() {
+		t.Error("Improved() = true, want false: nothing re-checked this finding")
+	}
+	if p := res.Progress(); !strings.Contains(p, "inconclusive") {
+		t.Errorf("Progress() = %q, want it to refuse a verdict", p)
+	}
+}
