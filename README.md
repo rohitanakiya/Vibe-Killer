@@ -237,17 +237,41 @@ adapter, never a core change. The Node and Python adapters are implemented;
 generic checks (dependencies, secrets, headers, CORS) run stack-independently.
 
 Route extraction is where that interface is most and least complete. Express,
-Flask and FastAPI have real extractors. Django and Next.js are recognized by
-name -- from `manage.py` and from the `next` dependency -- but nothing reads
-`urlpatterns` or `app/api` yet, so they map zero routes.
+Flask, FastAPI and Django have real extractors. Next.js is recognized by name
+-- from the `next` dependency -- but nothing reads `app/api` yet, so it maps
+zero routes.
+
+Django needed a different shape from the others, and it is worth knowing why
+before trusting any of this on a Django codebase. Flask and FastAPI put the
+path in a decorator above the handler, so one pass over one file yields a
+complete route. Django puts the path in a `urls.py` that names a view in
+another module, and a route's real path is the concatenation of every
+`include()` between the root URLconf and the entry that declares it. So the
+adapter walks the tree from `ROOT_URLCONF` down, and then reads the view's own
+module to find out which methods it accepts — `require_http_methods`,
+`require_POST`, an `api_view` list, the `def get` and `def post` of a
+class-based view, or a DRF router's action map. `re_path` regexes are
+converted rather than normalized as though they were templates.
+
+Methods are only ever taken from something the source states. A plain function
+view that inspects `request.method` itself is reported as `GET` alone, which is
+deliberate in that direction: this output is what the endpoint checks request,
+and inventing a `DELETE` the URLconf never promised would have them send a
+destructive request to an endpoint that might honour it. For the same reason a
+DRF `ReadOnlyModelViewSet` gets its two read routes and no more.
+
+The dynamic layer has still never run against a live Django instance. What
+changed is that its routes are now extracted and tested; proving the endpoint
+checks against a running Django app is a separate piece of work.
 
 That gap used to be invisible, which made it worse than the gap itself. A
 detected framework with an empty route list still satisfied the surface gate,
 so every endpoint check ran against nothing, found nothing, and the scan
 exited `0`: a clean report that meant "no endpoint was ever exercised" while
 reading exactly like "this application is sound". An empty route list is now a
-skip that names the framework, so a scan of a Django or Next.js app states
-plainly that it covered the static, dependency and secret layers only.
+skip that names the framework, so a scan of an app whose routing no extractor
+recognizes states plainly that it covered the static, dependency and secret
+layers only.
 
 Route templates are normalized on the way in, so Express's `:id`, Flask's
 `<int:id>` and FastAPI's `{id}` all become `{id}`. That is what lets a static

@@ -128,6 +128,14 @@ var DefaultExclude = []string{
 	".venv", "venv", "__pycache__", ".mypy_cache", ".pytest_cache",
 	"target", ".next", ".nuxt", ".svelte-kit", "bin", "obj", ".tox",
 	".idea", ".vscode", "site-packages",
+
+	// testdata is reserved by the Go tool for test input and holds no
+	// application code by convention. Enumerating it would report a sample
+	// project's routes as the operator's own attack surface -- this repository
+	// carries a Django project under internal/adapters/testdata for exactly
+	// that reason, and a user with Django fixtures of their own would hit the
+	// same thing.
+	"testdata",
 }
 
 // WalkSource visits every source file with one of the given extensions.

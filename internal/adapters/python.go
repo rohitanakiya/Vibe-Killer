@@ -142,10 +142,6 @@ var (
 	pyMethodRouteRe = regexp.MustCompile(
 		`@\s*([A-Za-z_][\w.]*)\s*\.\s*(get|post|put|patch|delete|options|head)\s*\(\s*(['"])([^'"]*)['"]`)
 
-	// Django: path("orders/<int:pk>/", views.detail)
-	pyDjangoRe = regexp.MustCompile(
-		`\b(path|re_path|url)\s*\(\s*(['"])([^'"]*)['"]\s*,\s*([A-Za-z_][\w.]*)`)
-
 	// Blueprint("name", __name__, url_prefix="/api")
 	pyBlueprintRe = regexp.MustCompile(
 		`([A-Za-z_]\w*)\s*=\s*Blueprint\s*\([^)]*url_prefix\s*=\s*(['"])([^'"]*)['"]`)
@@ -260,25 +256,23 @@ func (p *Python) EnumerateRoutes(ctx context.Context, repoRoot string, exclude [
 				addRoute(m[1], m[4], []string{strings.ToUpper(m[2])})
 			}
 
-			for _, m := range pyDjangoRe.FindAllStringSubmatch(line, -1) {
-				path, params := NormalizePathTemplate(m[3])
-				if path == "" {
-					continue
-				}
-				// Django's urls.py does not state the method; the view
-				// decides. Record it as GET and note the uncertainty by
-				// leaving the handler as the view reference.
-				routes = append(routes, surface.Route{
-					Method: "GET", Path: path, PathParams: params,
-					File: f.Path, Line: lineNo, Handler: m[4],
-				})
-			}
 		}
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
+
+	// Django is handled separately because it cannot be read a line at a
+	// time: the full path of a route is the concatenation of every include()
+	// between the root URLconf and the entry that declares it, and the view
+	// that decides which methods it accepts lives in another module. See
+	// django.go.
+	fromDjango, err := djangoRoutes(ctx, repoRoot, exclude)
+	if err != nil {
+		return nil, err
+	}
+	routes = append(routes, fromDjango...)
 
 	return DedupeRoutes(routes), nil
 }
