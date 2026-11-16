@@ -183,7 +183,7 @@ With one argument, the run is compared against the run immediately before it.`,
 	}
 
 	cmd.Flags().BoolVar(&failOnNew, "fail-on-new", false,
-		"exit non-zero if the later run has new or regressed findings")
+		"exit non-zero if the later run has new or regressed findings, or left one unchecked")
 	return cmd
 }
 

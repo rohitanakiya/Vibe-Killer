@@ -405,17 +405,29 @@ line numbers and the git revision** — otherwise an unrelated edit above the
 vulnerable line would make every finding look new and the run-to-run diff would
 be worthless.
 
-The envelope carries what did **not** run. `findings.json` has an optional
-top-level `skipped` array of `{check_id, layer, reason}`, so zero findings for
-a layer is distinguishable from a layer that ran clean:
+The envelope carries what did **not** run. `findings.json` has optional
+top-level `skipped` and `failed` arrays of `{check_id, layer, reason|error}`,
+so zero findings for a layer is distinguishable from a layer that ran clean —
+and a check that tried and broke is distinguishable from one that never
+started, which are different things to a consumer deciding whether to retry:
 
 ```json
 "skipped": [
   { "check_id": "engine.osv-scanner",
     "layer": "deps",
-    "reason": "osv-scanner is not installed or not on PATH" }
+    "reason": "osv-scanner is not installed or not on PATH" },
+  { "check_id": "engine.gitleaks",
+    "layer": "secrets",
+    "reason": "disabled in config (scanners.gitleaks.disabled in vibekiller.config.yaml)" }
 ]
 ```
+
+A scanner the operator switched off is in there for the same reason. It used to
+return nothing and no error, which is indistinguishable from a clean scan: on a
+repository with 97 dependency findings, disabling the dependency scanner and
+diffing made `vibekiller diff` report **97 fixed** and `--fail-on-new` exit 0.
+One config line could silence a CI gate and call it an improvement. The same
+two runs now report 97 not re-checked and exit 1.
 
 Without it the file could only be read one way, and it was read the wrong way:
 `vibekiller diff` treated any finding missing from the later run as fixed, so a
@@ -426,10 +438,10 @@ not pass on a run that checked less than the one before it. Shipping a scanner
 whose "fixed" could mean "nobody looked" would have undone the point of the
 rest of this tool.
 
-The envelope is versioned separately from the findings it carries, at `1.1`,
-because that change touched no finding field. Both `1.0` and `1.1` run
-directories are readable, and the array is omitted when nothing was skipped, so
-an older consumer sees a byte-identical file.
+The envelope is versioned separately from the findings it carries, at `1.2`,
+because those changes touched no finding field. Run directories at `1.0`,
+`1.1` and `1.2` are all readable, and each array is omitted when it is empty,
+so a consumer of an unaffected run sees a byte-identical file.
 
 Credentials never travel in a finding. Recorded requests carry a seeded-user
 label such as `userA-token`, and credential headers are replaced with

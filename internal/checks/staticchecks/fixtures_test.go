@@ -2,6 +2,7 @@ package staticchecks
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -322,24 +323,78 @@ func TestAMissingScannerIsReportedNotFatal(t *testing.T) {
 	_ = notInstalled
 }
 
-// A scanner the operator turned off produces nothing and no error.
-func TestADisabledScannerIsSkippedQuietly(t *testing.T) {
-	cfg := config.Defaults()
-	cfg.Scanners.Semgrep.Disabled = true
-
-	r, err := run.Create(t.TempDir(), run.Meta{RunID: "test", Tool: "vibekiller"})
-	if err != nil {
-		t.Fatal(err)
+// A scanner the operator turned off says so, rather than returning nothing.
+//
+// The previous version of this test asserted that Detect returned no error at
+// all, and that assertion is what kept the defect invisible for so long: the
+// name said "skipped quietly" while the body asserted
+// indistinguishable-from-a-clean-scan. (nil, nil) left the check in neither
+// the skipped nor the failed list, so nothing in findings.json said the layer
+// had not run and diff called its findings fixed on the next run.
+//
+// All three engines had it, so all three are checked.
+func TestADisabledScannerReportsThatItWasDisabled(t *testing.T) {
+	cases := []struct {
+		name    string
+		disable func(c *config.Config)
+		engine  check.Check
+		key     string
+	}{
+		{
+			name:    "semgrep",
+			disable: func(c *config.Config) { c.Scanners.Semgrep.Disabled = true },
+			engine:  &SemgrepEngine{},
+			key:     "scanners.semgrep.disabled",
+		},
+		{
+			name:    "osv-scanner",
+			disable: func(c *config.Config) { c.Scanners.OSV.Disabled = true },
+			engine:  &OSVEngine{},
+			key:     "scanners.osv_scanner.disabled",
+		},
+		{
+			name:    "gitleaks",
+			disable: func(c *config.Config) { c.Scanners.Gitleaks.Disabled = true },
+			engine:  &GitleaksEngine{},
+			key:     "scanners.gitleaks.disabled",
+		},
 	}
-	t.Cleanup(func() { _ = r.Close() })
 
-	env := &check.Env{Config: &cfg, Run: r, RepoRoot: t.TempDir()}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.Defaults()
+			tc.disable(&cfg)
 
-	fs, err := (&SemgrepEngine{}).Detect(context.Background(), env)
-	if err != nil {
-		t.Errorf("a disabled scanner should not error: %v", err)
-	}
-	if len(fs) != 0 {
-		t.Errorf("a disabled scanner produced %d findings", len(fs))
+			r, err := run.Create(t.TempDir(), run.Meta{RunID: "test", Tool: "vibekiller"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = r.Close() })
+
+			env := &check.Env{Config: &cfg, Run: r, RepoRoot: t.TempDir()}
+
+			fs, err := tc.engine.Detect(context.Background(), env)
+			if len(fs) != 0 {
+				t.Errorf("a disabled scanner produced %d findings", len(fs))
+			}
+			if err == nil {
+				t.Fatal("a disabled scanner returned no error, so the orchestrator " +
+					"cannot tell it from a scan that ran and found nothing")
+			}
+			// The sentinel is what the orchestrator classifies on, and it has
+			// to be distinguishable from a scanner that is merely absent: a
+			// consumer should retry one and not the other.
+			if !errors.Is(err, tool.ErrDisabled) {
+				t.Errorf("error = %v, want it to wrap tool.ErrDisabled", err)
+			}
+			var absent *tool.ErrNotInstalled
+			if errors.As(err, &absent) {
+				t.Errorf("error = %v, want it not to look like a missing binary", err)
+			}
+			// The reason doubles as the instruction for turning it back on.
+			if !strings.Contains(err.Error(), tc.key) {
+				t.Errorf("error = %q, want it to name %s", err.Error(), tc.key)
+			}
+		})
 	}
 }

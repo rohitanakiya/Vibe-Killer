@@ -12,7 +12,6 @@ package staticchecks
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -46,9 +45,21 @@ func runner(spec tool.Spec, cfg config.ScannerConfig) *tool.Runner {
 	return tool.New(spec, cfg.Path, cfg.ExtraArgs)
 }
 
-// ErrScannerDisabled is returned when the operator turned a scanner off. It is
-// reported as a skip rather than a failure.
-var ErrScannerDisabled = errors.New("disabled in config")
+// disabledError reports a scanner the operator switched off, naming the key
+// that switched it off and the file it is in.
+//
+// The reason text is what the operator and any consumer of findings.json see,
+// so it says what to change rather than only that something is missing. The
+// error wraps tool.ErrDisabled, which is what the orchestrator classifies on.
+func disabledError(cfg *config.Config, key string) error {
+	where := "the config"
+	if cfg != nil {
+		if p := cfg.SourcePath(); p != "" {
+			where = p
+		}
+	}
+	return fmt.Errorf("%w (scanners.%s.disabled in %s)", tool.ErrDisabled, key, where)
+}
 
 // --- Semgrep ---------------------------------------------------------------
 
@@ -70,7 +81,7 @@ func (e *SemgrepEngine) Meta() check.Meta {
 func (e *SemgrepEngine) Detect(ctx context.Context, env *check.Env) ([]finding.Finding, error) {
 	cfg := env.Config.Scanners.Semgrep
 	if cfg.Disabled {
-		return nil, nil
+		return nil, disabledError(env.Config, "semgrep")
 	}
 
 	r := runner(tool.SemgrepSpec, cfg)
@@ -121,7 +132,7 @@ func (e *OSVEngine) Meta() check.Meta {
 func (e *OSVEngine) Detect(ctx context.Context, env *check.Env) ([]finding.Finding, error) {
 	cfg := env.Config.Scanners.OSV
 	if cfg.Disabled {
-		return nil, nil
+		return nil, disabledError(env.Config, "osv_scanner")
 	}
 
 	r := runner(tool.OSVScannerSpec, cfg)
@@ -166,7 +177,7 @@ func (e *GitleaksEngine) Meta() check.Meta {
 func (e *GitleaksEngine) Detect(ctx context.Context, env *check.Env) ([]finding.Finding, error) {
 	cfg := env.Config.Scanners.Gitleaks
 	if cfg.Disabled {
-		return nil, nil
+		return nil, disabledError(env.Config, "gitleaks")
 	}
 
 	r := runner(tool.GitleaksSpec, cfg)

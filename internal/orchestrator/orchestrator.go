@@ -181,8 +181,11 @@ func (o *Orchestrator) Run(ctx context.Context, checks []check.Check, env *check
 				elapsed := time.Since(checkStart)
 
 				mu.Lock()
-				report.Ran++
 				if err != nil {
+					// Two kinds of error mean "this check did not run"
+					// rather than "this check broke", and both have to leave
+					// the same trace as a pre-run skip.
+					//
 					// An absent optional scanner is not a failure, and
 					// tool.ErrNotInstalled has said so in its own
 					// documentation all along -- "the orchestrator records
@@ -195,8 +198,20 @@ func (o *Orchestrator) Run(ctx context.Context, checks []check.Check, env *check
 					// SARIF levels, and warrant different responses from a
 					// consumer. The error text already carries the install
 					// hint, so it makes the reason as it stands.
+					//
+					// tool.ErrDisabled is its sibling: the operator
+					// switched the scanner off. That used to be expressed as
+					// (nil, nil), which the orchestrator could only read as
+					// a successful scan that found nothing -- so a layer the
+					// operator had turned off was recorded as a layer that
+					// came back clean, and diff called its findings fixed.
+					//
+					// report.Ran is counted in each branch below rather
+					// than above this one. A check that did not run has no
+					// business in that total, and it was in it for both of
+					// these cases.
 					var absent *tool.ErrNotInstalled
-					if errors.As(err, &absent) {
+					if errors.As(err, &absent) || errors.Is(err, tool.ErrDisabled) {
 						reason := err.Error()
 						report.Skipped = append(report.Skipped, check.SkipReason{
 							RuleID: m.RuleID, Layer: m.Layer, Reason: reason,
@@ -214,6 +229,10 @@ func (o *Orchestrator) Run(ctx context.Context, checks []check.Check, env *check
 						continue
 					}
 
+					// This one did run; it broke. That is the whole
+					// difference between the two branches, and it is why
+					// the count sits in both of them rather than above.
+					report.Ran++
 					report.Failed = append(report.Failed, CheckError{RuleID: m.RuleID, Layer: m.Layer, Err: err})
 					mu.Unlock()
 
@@ -223,6 +242,7 @@ func (o *Orchestrator) Run(ctx context.Context, checks []check.Check, env *check
 					o.emit(Event{Kind: EventFailed, RuleID: m.RuleID, Title: m.Title, Layer: m.Layer, Err: err, Elapsed: elapsed})
 					continue
 				}
+				report.Ran++
 				findings = append(findings, fs...)
 				mu.Unlock()
 

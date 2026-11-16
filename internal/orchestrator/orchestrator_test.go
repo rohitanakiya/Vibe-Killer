@@ -522,3 +522,63 @@ func TestAnAbsentScannerIsSkippedNotFailed(t *testing.T) {
 		t.Fatalf("failed = %v, want just the broken scanner", report.Failed)
 	}
 }
+
+// The sibling of TestAnAbsentScannerIsSkippedNotFailed, and the same defect by
+// a third route.
+//
+// A scanner the operator switched off used to return (nil, nil), which the
+// orchestrator could only read as a scan that ran and found nothing. So a
+// layer that was deliberately turned off was recorded as a layer that came
+// back clean: nothing in findings.json said it had not run, the report listed
+// it under neither heading, and diff called its findings fixed on the next
+// run. tool.ErrDisabled makes it tellable, and this asserts the three things
+// that follow from that.
+func TestADisabledScannerIsSkippedAndNotCountedAsRun(t *testing.T) {
+	env := testEnv(t)
+	o := New(Options{Workers: 2})
+
+	disabled := &stubCheck{
+		meta: meta("engine.gitleaks", check.LayerSecrets),
+		err: fmt.Errorf("%w (scanners.gitleaks.disabled in vibekiller.config.yaml)",
+			tool.ErrDisabled),
+	}
+	ran := &stubCheck{
+		meta:     meta("engine.semgrep", check.LayerStatic),
+		findings: []finding.Finding{validFinding("vk-ran")},
+	}
+	broken := &stubCheck{
+		meta: meta("engine.osv-scanner", check.LayerDeps),
+		err:  errors.New("osv-scanner exited with status 2"),
+	}
+
+	report, err := o.Run(context.Background(), []check.Check{disabled, ran, broken}, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(report.Skipped) != 1 || report.Skipped[0].RuleID != "engine.gitleaks" {
+		t.Fatalf("skipped = %v, want just the disabled scanner", report.Skipped)
+	}
+	// The reason doubles as the instruction for turning it back on, so it has
+	// to name the key and the file rather than only the fact.
+	if r := report.Skipped[0].Reason; !strings.Contains(r, "disabled") ||
+		!strings.Contains(r, "scanners.gitleaks.disabled") {
+		t.Errorf("skip reason = %q, want it to name the config key that switched it off", r)
+	}
+	if report.Skipped[0].Layer != check.LayerSecrets {
+		t.Errorf("layer = %q, want it carried so the skip can be joined to its findings", report.Skipped[0].Layer)
+	}
+
+	// Switching a scanner off is not a failure, and a real failure is still
+	// one, or this would trade one misclassification for another.
+	if len(report.Failed) != 1 || report.Failed[0].RuleID != "engine.osv-scanner" {
+		t.Fatalf("failed = %v, want just the broken scanner", report.Failed)
+	}
+
+	// A check that did not run has no business in the total that says how many
+	// did. The one that ran and the one that broke both did.
+	if report.Ran != 2 {
+		t.Errorf("ran = %d, want 2: the check that succeeded and the one that broke, "+
+			"but not the one that never started", report.Ran)
+	}
+}

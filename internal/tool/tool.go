@@ -38,6 +38,23 @@ func (e *ErrNotInstalled) Error() string {
 	return msg
 }
 
+// ErrDisabled means the operator switched this scanner off.
+//
+// It is a skip rather than a failure, and it has to be tellable from one: a
+// consumer should not retry a scanner the operator declined, and a layer that
+// was switched off is not a layer that found nothing. Before this existed a
+// disabled scanner returned (nil, nil), which is indistinguishable from a
+// successful scan of a clean tree -- so the check was recorded as having run,
+// the report listed nothing, and `diff` called that scanner's findings fixed
+// on the next run. ErrScannerDisabled was declared in the staticchecks
+// package with a doc comment saying it was "reported as a skip", and was
+// returned by nothing.
+//
+// It lives here beside ErrNotInstalled, which is its sibling -- both mean the
+// scanner was not available to this run -- so that the orchestrator can
+// classify it without importing a checks package.
+var ErrDisabled = errors.New("disabled in config")
+
 // ErrFailed means the tool ran but exited with an unexpected status.
 type ErrFailed struct {
 	Name     string
