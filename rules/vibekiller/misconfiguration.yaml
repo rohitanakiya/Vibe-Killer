@@ -177,9 +177,13 @@ rules:
     #
     # The Starlette form is here too, because FastAPI has no ALLOWED_HOSTS
     # setting and expresses the same thing as middleware.
+    #
+    # One alternative covers both shapes: `[..., "*", ...]` matches
+    # `ALLOWED_HOSTS = ["*"]` as well, since `...` matches zero elements.
+    # Measured, because keeping a redundant alternative beside it would read
+    # as though it did not.
     pattern-either:
       - pattern: 'ALLOWED_HOSTS = [..., "*", ...]'
-      - pattern: 'ALLOWED_HOSTS = ["*"]'
       - pattern: 'TrustedHostMiddleware(..., allowed_hosts=[..., "*", ...], ...)'
       - pattern: '$APP.add_middleware(..., allowed_hosts=[..., "*", ...], ...)'
 
