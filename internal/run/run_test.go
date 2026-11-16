@@ -228,7 +228,7 @@ func TestWriteFindingsRefusesContractViolations(t *testing.T) {
 	bad := validFinding("handlerA")
 	bad.Confidence = finding.ConfidenceConfirmed // confirmed with no reproduction
 
-	err := r.WriteFindings([]finding.Finding{bad}, nil)
+	err := r.WriteFindings([]finding.Finding{bad}, finding.Coverage{})
 	if err == nil {
 		t.Fatal("findings.json was written with a contract violation in it")
 	}
@@ -247,7 +247,7 @@ func TestWriteAndLoadFindings(t *testing.T) {
 	})
 
 	in := []finding.Finding{validFinding("handlerA"), validFinding("handlerB")}
-	if err := r.WriteFindings(in, nil); err != nil {
+	if err := r.WriteFindings(in, finding.Coverage{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := r.Close(); err != nil {
@@ -287,7 +287,7 @@ func TestWriteAndLoadFindings(t *testing.T) {
 func TestWritesAreAtomic(t *testing.T) {
 	r, _ := create(t, Meta{RunID: "20260101-000000-aaa"})
 
-	if err := r.WriteFindings([]finding.Finding{validFinding("handlerA")}, nil); err != nil {
+	if err := r.WriteFindings([]finding.Finding{validFinding("handlerA")}, finding.Coverage{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := r.Close(); err != nil {
@@ -410,7 +410,7 @@ func TestListAndPrevious(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := r.WriteFindings(nil, nil); err != nil {
+		if err := r.WriteFindings(nil, finding.Coverage{}); err != nil {
 			t.Fatal(err)
 		}
 		if err := r.Close(); err != nil {
@@ -481,7 +481,7 @@ func TestFindingsDocumentCarriesSkippedChecks(t *testing.T) {
 		Layer:   "deps",
 		Reason:  "osv-scanner is not installed or not on PATH",
 	}}
-	if err := r.WriteFindings([]finding.Finding{validFinding("handlerA")}, skips); err != nil {
+	if err := r.WriteFindings([]finding.Finding{validFinding("handlerA")}, finding.Coverage{Skipped: skips}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -510,7 +510,7 @@ func TestAnEmptySkipListIsOmittedEntirely(t *testing.T) {
 	r, _ := create(t, Meta{RunID: "20260101-000000-bbb"})
 	defer func() { _ = r.Close() }()
 
-	if err := r.WriteFindings([]finding.Finding{validFinding("handlerA")}, nil); err != nil {
+	if err := r.WriteFindings([]finding.Finding{validFinding("handlerA")}, finding.Coverage{}); err != nil {
 		t.Fatal(err)
 	}
 	b, err := os.ReadFile(r.Path(FileFindings))

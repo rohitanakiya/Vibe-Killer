@@ -10,6 +10,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -27,6 +28,7 @@ import (
 	"github.com/rohitanakiya/Vibe-Killer/internal/report"
 	"github.com/rohitanakiya/Vibe-Killer/internal/run"
 	"github.com/rohitanakiya/Vibe-Killer/internal/runtime"
+	"github.com/rohitanakiya/Vibe-Killer/internal/sarif"
 	"github.com/rohitanakiya/Vibe-Killer/internal/scope"
 	"github.com/rohitanakiya/Vibe-Killer/internal/surface"
 	"github.com/rohitanakiya/Vibe-Killer/internal/tool"
@@ -43,6 +45,10 @@ import (
 
 // Version is the build version, set by the CLI.
 var Version = "dev"
+
+// InformationURI is the project home, stamped into SARIF so an alert in
+// someone else's repository can be traced to the tool that raised it.
+var InformationURI = "https://github.com/rohitanakiya/Vibe-Killer"
 
 // Mode names what a scan was asked to do.
 type Mode string
@@ -118,6 +124,10 @@ type Result struct {
 
 	ReportMarkdownPath string
 	ReportHTMLPath     string
+
+	// ReportSARIFPath is the machine-readable report, for GitHub code
+	// scanning or any other SARIF consumer.
+	ReportSARIFPath string
 }
 
 // ErrTargetNotAcknowledged is returned when a target was given without the
@@ -252,6 +262,23 @@ func Scan(ctx context.Context, opts ScanOptions) (*Result, error) {
 		rulesDir = ""
 	}
 
+	// The path has to be absolute, and that is not a tidiness preference.
+	// A run directory is created relative to the working directory
+	// ("runs/<id>"), while the scanners are executed with their working
+	// directory set to the repository root. A relative --config therefore
+	// resolved against the wrong directory whenever the repository was not
+	// also the working directory, semgrep exited 7 (MISSING_CONFIG) with
+	// nothing on stderr, and the entire 32-rule static engine silently did
+	// not run. `scan --repo .` hid it, because there the two directories
+	// coincide.
+	if rulesDir != "" {
+		if abs, aerr := filepath.Abs(rulesDir); aerr == nil {
+			rulesDir = abs
+		} else {
+			r.Errorf("could not resolve the rule pack path, so semgrep may not find it: %v", aerr)
+		}
+	}
+
 	env := &check.Env{
 		Config:   cfg,
 		Guard:    guard,
@@ -377,7 +404,10 @@ func Scan(ctx context.Context, opts ScanOptions) (*Result, error) {
 	// the terminal summary and Result.Skipped all describe the same run.
 	allSkips := mergeSkips(orchReport.Skipped, deselected)
 
-	if err := r.WriteFindings(merged, skippedChecks(allSkips)); err != nil {
+	if err := r.WriteFindings(merged, finding.Coverage{
+		Skipped: skippedChecks(allSkips),
+		Failed:  failedChecks(orchReport.Failed),
+	}); err != nil {
 		return nil, err
 	}
 
@@ -420,6 +450,30 @@ func Scan(ctx context.Context, opts ScanOptions) (*Result, error) {
 	}
 	if env.Surface != nil {
 		in.RouteCount = len(env.Surface.Routes)
+	}
+
+	// The SARIF report is derived from findings.json after it has been
+	// written, rather than from the in-memory findings. That makes it
+	// provably a function of the published contract: if the two ever
+	// disagreed, the one a consumer reads would be the one in the file.
+	if doc, derr := run.LoadFindings(r.Dir()); derr != nil {
+		r.Errorf("could not re-read findings.json to build SARIF: %v", derr)
+	} else {
+		log := sarif.Convert(doc, sarif.Options{
+			ToolVersion:    Version,
+			InformationURI: InformationURI,
+			Surface:        env.Surface,
+		})
+		if b, merr := json.MarshalIndent(log, "", "  "); merr != nil {
+			r.Errorf("could not encode SARIF: %v", merr)
+		} else {
+			sarifPath := r.Path("report.sarif")
+			if werr := os.WriteFile(sarifPath, append(b, '\n'), 0o644); werr != nil {
+				r.Errorf("could not write report.sarif: %v", werr)
+			} else {
+				result.ReportSARIFPath = sarifPath
+			}
+		}
 	}
 
 	mdPath := r.Path("report.md")
@@ -614,6 +668,29 @@ func skippedChecks(in []check.SkipReason) []finding.SkippedCheck {
 			CheckID: s.RuleID,
 			Layer:   string(s.Layer),
 			Reason:  s.Reason,
+		})
+	}
+	return out
+}
+
+// failedChecks converts the orchestrator's failure list into the findings.json
+// shape, for the same reason skippedChecks exists: the human report has always
+// said "these checks failed to complete" and the machine contract said nothing,
+// so a consumer could not tell a broken scanner from a clean layer.
+func failedChecks(in []orchestrator.CheckError) []finding.FailedCheck {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]finding.FailedCheck, 0, len(in))
+	for _, e := range in {
+		msg := ""
+		if e.Err != nil {
+			msg = e.Err.Error()
+		}
+		out = append(out, finding.FailedCheck{
+			CheckID: e.RuleID,
+			Layer:   string(e.Layer),
+			Error:   msg,
 		})
 	}
 	return out

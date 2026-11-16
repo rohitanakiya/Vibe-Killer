@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/rohitanakiya/Vibe-Killer/internal/finding"
+	"github.com/rohitanakiya/Vibe-Killer/internal/surface"
 )
 
 // DirName is the directory, relative to the working directory, that holds all
@@ -298,7 +299,7 @@ func (r *Run) WriteSurface(v any) error {
 // Every finding is validated first. A finding that violates the contract fails
 // the write rather than being emitted, because a consumer that cannot trust
 // the schema has to re-derive everything itself.
-func (r *Run) WriteFindings(fs []finding.Finding, skipped []finding.SkippedCheck) error {
+func (r *Run) WriteFindings(fs []finding.Finding, cov finding.Coverage) error {
 	if err := finding.ValidateAll(fs); err != nil {
 		return fmt.Errorf("refusing to write findings.json with contract violations: %w", err)
 	}
@@ -312,7 +313,8 @@ func (r *Run) WriteFindings(fs []finding.Finding, skipped []finding.SkippedCheck
 		Target:        r.meta.Target,
 		Counts:        finding.Summarize(fs),
 		Findings:      fs,
-		Skipped:       skipped,
+		Skipped:       cov.Skipped,
+		Failed:        cov.Failed,
 	}
 
 	r.mu.Lock()
@@ -323,7 +325,7 @@ func (r *Run) WriteFindings(fs []finding.Finding, skipped []finding.SkippedCheck
 		return err
 	}
 	r.Log("findings.written", map[string]any{
-		"total": doc.Counts.Total, "confirmed": doc.Counts.Confirmed, "skipped": len(doc.Skipped)})
+		"total": doc.Counts.Total, "confirmed": doc.Counts.Confirmed, "skipped": len(doc.Skipped), "failed": len(doc.Failed)})
 	return nil
 }
 
@@ -430,6 +432,25 @@ func LoadFindings(dir string) (*finding.Document, error) {
 			path, doc.SchemaVersion, strings.Join(finding.SupportedDocumentSchemaVersions, ", "))
 	}
 	return &doc, nil
+}
+
+// LoadSurface reads the mapped application surface from a run directory.
+//
+// A missing or unreadable surface is not an error for every caller -- the
+// SARIF writer uses it to resolve a route back to its handler and degrades to
+// a less precise location without it -- so the error is returned rather than
+// logged, and callers decide.
+func LoadSurface(dir string) (*surface.Surface, error) {
+	path := filepath.Join(dir, FileSurface)
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var s surface.Surface
+	if err := json.Unmarshal(b, &s); err != nil {
+		return nil, fmt.Errorf("parsing %s: %w", path, err)
+	}
+	return &s, nil
 }
 
 // LoadMeta reads a run's metadata.

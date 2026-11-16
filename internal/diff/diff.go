@@ -54,11 +54,11 @@ type Entry struct {
 	// from likely to confirmed has not got worse; it has been proven.
 	PreviousConfidence finding.Confidence `json:"previous_confidence,omitempty"`
 
-	// SkipReason is why the later run could not speak to this finding. It is
-	// set only on an unchecked entry, and it is the whole value of that
-	// entry: "absent" is not actionable, "absent because semgrep was not
-	// installed" is.
-	SkipReason string `json:"skip_reason,omitempty"`
+	// Reason is why the later run could not speak to this finding, whether
+	// its check was skipped or failed. It is set only on an unchecked entry,
+	// and it is the whole value of that entry: "absent" is not actionable,
+	// "absent because semgrep exited 7" is.
+	Reason string `json:"reason,omitempty"`
 }
 
 // Result is the whole comparison.
@@ -144,9 +144,9 @@ func Compare(from, to *finding.Document) *Result {
 		// answer is that we do not know, and the status is left as it was.
 		if reason, ok := unchecked(f); ok {
 			res.Unchecked = append(res.Unchecked, Entry{
-				Change:     ChangeUnchecked,
-				Finding:    f,
-				SkipReason: reason,
+				Change:  ChangeUnchecked,
+				Finding: f,
+				Reason:  reason,
 			})
 			continue
 		}
@@ -171,7 +171,8 @@ func Compare(from, to *finding.Document) *Result {
 }
 
 // suppressedBy returns a predicate saying whether a finding's absence from the
-// later run is explained by a check that did not run, and if so why.
+// later run is explained by a check that did not produce results -- skipped or
+// failed -- and if so why.
 //
 // Two joins are needed, because a check's rule_id is not always the rule_id of
 // the findings it produces. The endpoint, runtime and exposure checks emit
@@ -193,7 +194,7 @@ func Compare(from, to *finding.Document) *Result {
 // behaviour, kept deliberately: inventing uncertainty about runs we have no
 // information on would be its own kind of dishonesty.
 func suppressedBy(to *finding.Document) func(finding.Finding) (string, bool) {
-	if len(to.Skipped) == 0 {
+	if len(to.Skipped) == 0 && len(to.Failed) == 0 {
 		return func(finding.Finding) (string, bool) { return "", false }
 	}
 
@@ -204,14 +205,25 @@ func suppressedBy(to *finding.Document) func(finding.Finding) (string, bool) {
 
 	byRule := map[string]string{}
 	bySource := map[finding.Source]string{}
-	for _, sk := range to.Skipped {
-		byRule[sk.CheckID] = sk.Reason
+	record := func(checkID, layer, reason string) {
+		byRule[checkID] = reason
 
-		src, ok := finding.SourceForLayer(sk.Layer)
+		src, ok := finding.SourceForLayer(layer)
 		if !ok || present[src] {
-			continue
+			return
 		}
-		bySource[src] = sk.Reason
+		bySource[src] = reason
+	}
+
+	for _, sk := range to.Skipped {
+		record(sk.CheckID, sk.Layer, sk.Reason)
+	}
+
+	// A check that ran and broke established no more than one that never ran.
+	// semgrep exiting non-zero makes every sast finding disappear, and reading
+	// that as a fix is the same error by a different route.
+	for _, fl := range to.Failed {
+		record(fl.CheckID, fl.Layer, "the check failed: "+fl.Error)
 	}
 
 	return func(f finding.Finding) (string, bool) {

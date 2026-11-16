@@ -1,0 +1,224 @@
+# A composite action so another repository can adopt Vibe Killer in one step.
+#
+# It installs the pinned version, installs the wrapped scanners (without them a
+# scan reports most checks as skipped and finds very little), runs the scan, and
+# hands the SARIF to code scanning.
+#
+# Defaults are the safe ones: repository-only, no network, no target. Exercising
+# a running instance requires naming the target and separately acknowledging
+# that you own it, exactly as the CLI does -- an action input is not a reason to
+# loosen that.
+name: Vibe Killer
+description: Find and prove security weaknesses in an application you own, and report them to code scanning.
+author: rohitanakiya
+
+branding:
+  icon: shield
+  color: purple
+
+inputs:
+  repo:
+    description: Path to the repository to analyze.
+    required: false
+    default: "."
+  version:
+    description: >
+      Version of Vibe Killer to install, as a Go module version such as
+      v0.2.0, or "latest". Pin this: "latest" means a new release can change
+      your results without a commit on your side.
+    required: false
+    default: latest
+  go-version:
+    description: Go toolchain used to install the binary. The module needs 1.26 or newer.
+    required: false
+    default: "1.26"
+  static-only:
+    description: >
+      Analyze the repository and make no outbound connection of any kind. This
+      is the default, and the only mode that needs no target and no ownership
+      acknowledgement.
+    required: false
+    default: "true"
+  target:
+    description: >
+      Base URL of a running instance of this same application to exercise.
+      Leave empty unless you own it. It must also be listed in
+      authorized_targets in your config, or the run is refused.
+    required: false
+    default: ""
+  i-own-this-target:
+    description: >
+      Set to "true" to assert you own or are authorized to test the target.
+      Required whenever target is set; the scan is refused without it, and the
+      acknowledgement is recorded in the run log.
+    required: false
+    default: "false"
+  scanners:
+    description: >
+      Comma-separated wrapped scanners to install: semgrep, osv-scanner,
+      gitleaks. Each is optional, and a missing one is reported as a skipped
+      check rather than a failure -- but the static, dependency and secret
+      layers come entirely from these, so dropping them drops that coverage.
+    required: false
+    default: semgrep,osv-scanner,gitleaks
+  category:
+    description: >
+      SARIF automation category. Distinct values are what let more than one
+      upload coexist on a single commit; a second upload with the same category
+      overwrites the first.
+    required: false
+    default: vibekiller
+  upload-sarif:
+    description: >
+      Upload the SARIF to code scanning. Needs permissions security-events:
+      write on the calling job.
+    required: false
+    default: "true"
+  fail-on-findings:
+    description: >
+      Fail the step when a finding reaches the severity threshold. Set to
+      "false" to report into code scanning without gating the build. The
+      threshold itself is severity_threshold in vibekiller.config.yaml; there
+      is no flag for it, so that one setting lives with the rest of the
+      configuration rather than being split between the file and the workflow.
+    required: false
+    default: "true"
+
+outputs:
+  run-dir:
+    description: The run directory, which holds findings.json, the reports and the log.
+    value: ${{ steps.scan.outputs.run-dir }}
+  sarif-file:
+    description: Path to the SARIF report.
+    value: ${{ steps.scan.outputs.sarif-file }}
+  findings-file:
+    description: Path to findings.json, the machine-readable contract.
+    value: ${{ steps.scan.outputs.findings-file }}
+  exit-code:
+    description: >
+      The scan's exit code: 0 clean, 1 a finding reached the threshold, 2 the
+      scan could not complete, 3 refused on scope grounds.
+    value: ${{ steps.scan.outputs.exit-code }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Go
+      uses: actions/setup-go@v7
+      with:
+        go-version: ${{ inputs.go-version }}
+        cache: false
+
+    - name: Install Vibe Killer
+      shell: bash
+      run: go install "github.com/rohitanakiya/Vibe-Killer/cmd/vibekiller@${{ inputs.version }}"
+
+    - name: Install wrapped scanners
+      shell: bash
+      env:
+        SCANNERS: ${{ inputs.scanners }}
+      run: |
+        set -euo pipefail
+        IFS=',' read -ra want <<< "${SCANNERS}"
+        for s in "${want[@]}"; do
+          case "$(echo "$s" | tr -d '[:space:]')" in
+            "") ;;
+            semgrep)     pipx install semgrep ;;
+            osv-scanner) go install github.com/google/osv-scanner/v2/cmd/osv-scanner@latest ;;
+            gitleaks)    go install github.com/zricethezav/gitleaks/v8@latest ;;
+            *) echo "::warning::unknown scanner '$s' ignored" ;;
+          esac
+        done
+        vibekiller checks || true
+
+    - name: Scan
+      id: scan
+      shell: bash
+      env:
+        VK_REPO: ${{ inputs.repo }}
+        VK_STATIC_ONLY: ${{ inputs.static-only }}
+        VK_TARGET: ${{ inputs.target }}
+        VK_OWN: ${{ inputs.i-own-this-target }}
+        VK_FAIL: ${{ inputs.fail-on-findings }}
+      run: |
+        set -uo pipefail
+
+        # A dedicated directory, so the run is found without guessing. The
+        # repository may already contain a runs/ directory from local scans,
+        # and picking the newest entry out of that would be a guess about
+        # someone else's files.
+        runs_dir=".vibekiller-runs"
+        rm -rf "${runs_dir}"
+
+        args=(scan --repo "${VK_REPO}" --runs-dir "${runs_dir}")
+
+        if [ "${VK_STATIC_ONLY}" = "true" ]; then
+          args+=(--static-only)
+        fi
+
+        if [ -n "${VK_TARGET}" ]; then
+          if [ "${VK_OWN}" != "true" ]; then
+            echo "::error::target is set but i-own-this-target is not true. Vibe Killer only contacts a host you have declared and acknowledged owning."
+            exit 3
+          fi
+          args+=(--target "${VK_TARGET}" --i-own-this-target)
+        fi
+
+        set +e
+        vibekiller "${args[@]}"
+        code=$?
+        set -e
+        echo "exit-code=${code}" >> "$GITHUB_OUTPUT"
+
+        # There is no runs/latest pointer, so the run is located by listing the
+        # dedicated directory emptied above. Sorting by name rather than mtime
+        # is deliberate: run ids are timestamped and sort lexicographically,
+        # which is stable where mtime is not.
+        dir="$(find "${runs_dir}" -mindepth 1 -maxdepth 1 -type d | sort | tail -1)"
+        if [ -z "${dir}" ]; then
+          echo "::error::the scan produced no run directory"
+          exit 2
+        fi
+        echo "run-dir=${dir}" >> "$GITHUB_OUTPUT"
+        echo "sarif-file=${dir}/report.sarif" >> "$GITHUB_OUTPUT"
+        echo "findings-file=${dir}/findings.json" >> "$GITHUB_OUTPUT"
+
+        # Exit code 2 means the scan could not complete and 3 that it was
+        # refused on scope grounds. Neither is a finding, and neither should be
+        # swallowed by fail-on-findings.
+        if [ "${code}" -ge 2 ]; then
+          exit "${code}"
+        fi
+        if [ "${code}" -eq 1 ] && [ "${VK_FAIL}" != "true" ]; then
+          echo "::notice::findings reached the severity threshold; not failing because fail-on-findings is false"
+        fi
+
+    - name: Summarize
+      if: always() && steps.scan.outputs.run-dir != ''
+      shell: bash
+      run: |
+        set -euo pipefail
+        # The coverage section first, because it changes how the findings
+        # should be read.
+        {
+          echo "## Vibe Killer"
+          echo
+          sed -n '/^## What this scan did not check/,/^## /p' "${{ steps.scan.outputs.run-dir }}/report.md" | sed '$d' || true
+          echo
+          sed -n '/^## Summary/,/^## /p' "${{ steps.scan.outputs.run-dir }}/report.md" | sed '$d' || true
+        } >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Upload SARIF
+      if: always() && inputs.upload-sarif == 'true' && steps.scan.outputs.sarif-file != ''
+      uses: github/codeql-action/upload-sarif@v4
+      with:
+        sarif_file: ${{ steps.scan.outputs.sarif-file }}
+        category: ${{ inputs.category }}
+
+    - name: Upload the run directory
+      if: always() && steps.scan.outputs.run-dir != ''
+      uses: actions/upload-artifact@v7
+      with:
+        name: vibekiller-run
+        path: ${{ steps.scan.outputs.run-dir }}
+        if-no-files-found: warn

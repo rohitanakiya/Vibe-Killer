@@ -358,8 +358,8 @@ func DiffMarkdown(r *diff.Result) string {
 			if e.PreviousConfidence != "" {
 				fmt.Fprintf(&b, "  - confidence changed from %s to %s\n", e.PreviousConfidence, f.Confidence)
 			}
-			if e.SkipReason != "" {
-				fmt.Fprintf(&b, "  - not re-checked: %s\n", e.SkipReason)
+			if e.Reason != "" {
+				fmt.Fprintf(&b, "  - not re-checked: %s\n", e.Reason)
 			}
 		}
 		b.WriteString("\n")

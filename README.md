@@ -307,7 +307,7 @@ vibekiller scan --repo . --target http://localhost:3000 --i-own-this-target
 vibekiller scan --static-only          # code + deps + secrets, no network
 vibekiller scan --with-runtime         # enable the observe-only runtime adapter
 vibekiller reproduce <finding_id>      # re-run one finding's proof
-vibekiller report runs/<id>            # render Markdown or HTML
+vibekiller report runs/<id>            # render Markdown, HTML or SARIF
 vibekiller diff <runA> <runB>          # new / still-open / fixed / regressed
 vibekiller history                     # recorded runs, and one finding's trend
 ```
@@ -436,6 +436,77 @@ label such as `userA-token`, and credential headers are replaced with
 `<redacted>`; the contract validator rejects a finding that carries a live
 token. gitleaks is invoked with `--redact`, and secret findings are keyed on a
 hash, so a run directory is safe to attach to a ticket.
+
+---
+
+## GitHub code scanning
+
+Every run writes `report.sarif` beside the other reports, and an existing run
+can be re-rendered with `vibekiller report runs/<id> --format sarif`. Upload it
+and each finding becomes an alert annotated on the line a reviewer has to
+change:
+
+```yaml
+permissions:
+  contents: read
+  security-events: write   # required to upload SARIF
+
+steps:
+  - uses: actions/checkout@v7
+  - uses: rohitanakiya/Vibe-Killer@v0.2.0
+    with:
+      static-only: true
+```
+
+`action.yml` in this repository installs the pinned version, installs the
+wrapped scanners, runs the scan, uploads the SARIF and attaches the whole run
+directory as an artifact. It ships from v0.2.0 onward, so pin a tag at or
+above that rather than a branch. Its defaults are the safe ones: repository only, no
+network, no target. Setting `target` additionally requires
+`i-own-this-target: true`, and the host must still be in `authorized_targets`
+or the run is refused -- an action input is not a reason to loosen that.
+
+Driving the CLI directly works too, but note there is no `runs/latest`: the run
+directory is timestamped, so point the upload at the one the scan just made.
+
+```yaml
+- run: vibekiller scan --repo . --static-only --runs-dir .vk-runs
+- id: vk
+  run: echo "dir=$(find .vk-runs -mindepth 1 -maxdepth 1 -type d | sort | tail -1)" >> "$GITHUB_OUTPUT"
+- uses: github/codeql-action/upload-sarif@v4
+  with:
+    sarif_file: ${{ steps.vk.outputs.dir }}/report.sarif
+    category: vibekiller
+```
+
+Three details are deliberate.
+
+**Alerts survive unrelated edits.** GitHub matches an alert across runs on
+`partialFingerprints.primaryLocationLineHash`, and what goes in it is the
+`finding_id` — which excludes line numbers by design. Editing above a
+vulnerable line does not close the alert and open a duplicate, which is the
+usual failure of line-hash fingerprints.
+
+**A dynamic finding points at its handler.** A finding about `GET /orders/{id}`
+is not about a file, but code scanning will not display a result without one.
+The route is resolved back through the mapped surface to the handler that
+serves it, so the alert lands on real code. When no handler can be resolved the
+result is still emitted, with the route in its logical location and a message
+saying the location is imprecise, because dropping it would lose a real
+finding.
+
+**Coverage travels with the results.** Checks that were skipped or that failed
+become `invocations[].toolExecutionNotifications` — skips as `note`, failures
+as `error`, with `executionSuccessful` false when anything broke. Be aware that
+GitHub's own documentation does not say it ingests these, so they may not
+appear in its UI; they are there because they are the correct SARIF for the
+fact, and because every other consumer can read them. The same information is
+in `findings.json`, which is what Vibe Giver reads.
+
+The writer stays inside GitHub's documented limits (25,000 results and rules
+per run, 1,024 characters of rule text, 10 MB gzipped) and clamps rather than
+emitting a file that would be rejected whole. `--category` sets the automation
+category, which is what allows more than one upload per commit.
 
 ---
 

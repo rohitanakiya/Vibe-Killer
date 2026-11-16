@@ -78,6 +78,11 @@ type Report struct {
 type CheckError struct {
 	RuleID string
 	Err    error
+
+	// Layer is carried for the same reason SkipReason carries it: a consumer
+	// joining a failure to the findings it suppressed cannot do so on rule_id
+	// alone, because engine.osv-scanner produces deps.known-vulnerability.
+	Layer check.Layer
 }
 
 func (c CheckError) String() string { return c.RuleID + ": " + c.Err.Error() }
@@ -176,7 +181,7 @@ func (o *Orchestrator) Run(ctx context.Context, checks []check.Check, env *check
 				mu.Lock()
 				report.Ran++
 				if err != nil {
-					report.Failed = append(report.Failed, CheckError{RuleID: m.RuleID, Err: err})
+					report.Failed = append(report.Failed, CheckError{RuleID: m.RuleID, Layer: m.Layer, Err: err})
 					mu.Unlock()
 
 					if env.Run != nil {

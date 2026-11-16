@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -18,6 +19,8 @@ import (
 	"github.com/rohitanakiya/Vibe-Killer/internal/httpx"
 	"github.com/rohitanakiya/Vibe-Killer/internal/report"
 	"github.com/rohitanakiya/Vibe-Killer/internal/run"
+	"github.com/rohitanakiya/Vibe-Killer/internal/sarif"
+	"github.com/rohitanakiya/Vibe-Killer/internal/surface"
 	"github.com/rohitanakiya/Vibe-Killer/internal/vcs"
 )
 
@@ -25,8 +28,9 @@ import (
 
 func newReportCmd() *cobra.Command {
 	var (
-		format string
-		output string
+		format   string
+		output   string
+		category string
 	)
 
 	cmd := &cobra.Command{
@@ -36,7 +40,12 @@ func newReportCmd() *cobra.Command {
 completed, reading findings.json and run.json from the run directory.
 
 The HTML report is a single self-contained file with no external assets, so it
-can be opened offline and attached to a ticket.`,
+can be opened offline and attached to a ticket.
+
+--format sarif emits SARIF 2.1.0, which GitHub code scanning ingests: upload it
+and each finding becomes an annotated alert on the pull request. Checks that
+were skipped or that failed are carried as tool execution notifications, so the
+file says what was not covered as well as what was found.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			dir := args[0]
@@ -52,7 +61,16 @@ can be opened offline and attached to a ticket.`,
 				meta = &run.Meta{RunID: doc.RunID, RepoPath: doc.RepoPath, RepoRev: doc.RepoRev, Target: doc.Target}
 			}
 
-			in := report.Input{Meta: *meta, Findings: doc.Findings}
+			// The coverage section used to be lost on a re-render, because
+			// only the findings were read back. Now that findings.json
+			// carries what did not run, a re-rendered report says the same
+			// thing the original did instead of looking cleaner than it was.
+			in := report.Input{
+				Meta:     *meta,
+				Findings: doc.Findings,
+				Skipped:  check.GroupSkipLines(skipReasonsFromDoc(doc)),
+				Failed:   failureLinesFromDoc(doc),
+			}
 
 			var rendered string
 			switch strings.ToLower(format) {
@@ -60,8 +78,27 @@ can be opened offline and attached to a ticket.`,
 				rendered = report.Markdown(in)
 			case "html":
 				rendered = report.HTML(in)
+			case "sarif":
+				// The surface is what lets an endpoint finding resolve to the
+				// handler serving the route. A run directory always has one if
+				// mapping ran, and its absence only costs precision.
+				var mapped *surface.Surface
+				if loaded, serr := run.LoadSurface(dir); serr == nil {
+					mapped = loaded
+				}
+				log := sarif.Convert(doc, sarif.Options{
+					ToolVersion:    Version,
+					InformationURI: engine.InformationURI,
+					Surface:        mapped,
+					Category:       category,
+				})
+				b, merr := json.MarshalIndent(log, "", "  ")
+				if merr != nil {
+					return exitWith(ExitError, "encoding SARIF: %v", merr)
+				}
+				rendered = string(b) + "\n"
 			default:
-				return exitWith(ExitError, "unknown format %q (want markdown or html)", format)
+				return exitWith(ExitError, "unknown format %q (want markdown, html or sarif)", format)
 			}
 
 			if output == "" {
@@ -76,7 +113,8 @@ can be opened offline and attached to a ticket.`,
 		},
 	}
 
-	cmd.Flags().StringVar(&format, "format", "markdown", "output format: markdown or html")
+	cmd.Flags().StringVar(&format, "format", "markdown", "output format: markdown, html or sarif")
+	cmd.Flags().StringVar(&category, "category", "", "SARIF automation category, which is what lets two uploads coexist on one commit")
 	cmd.Flags().StringVarP(&output, "output", "o", "", "write to this file instead of stdout")
 	return cmd
 }
@@ -446,6 +484,37 @@ func newChecksCmd() *cobra.Command {
 		},
 	}
 	return cmd
+}
+
+// skipReasonsFromDoc re-hydrates the document's skip list into the shape the
+// grouping helper takes. The two types stay separate on purpose: findings.json
+// must not depend on an internal check type, and the check package must not
+// depend on the serialized contract.
+func skipReasonsFromDoc(doc *finding.Document) []check.SkipReason {
+	if len(doc.Skipped) == 0 {
+		return nil
+	}
+	out := make([]check.SkipReason, 0, len(doc.Skipped))
+	for _, s := range doc.Skipped {
+		out = append(out, check.SkipReason{
+			RuleID: s.CheckID,
+			Layer:  check.Layer(s.Layer),
+			Reason: s.Reason,
+		})
+	}
+	return out
+}
+
+func failureLinesFromDoc(doc *finding.Document) []string {
+	if len(doc.Failed) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(doc.Failed))
+	for _, f := range doc.Failed {
+		out = append(out, f.CheckID+": "+f.Error)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func requirements(m check.Meta) []string {

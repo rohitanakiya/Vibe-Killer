@@ -235,6 +235,9 @@ func printResult(cmd *cobra.Command, r *engine.Result) {
 	if r.ReportHTMLPath != "" {
 		fmt.Fprintf(out, "          %s\n", r.ReportHTMLPath)
 	}
+	if r.ReportSARIFPath != "" {
+		fmt.Fprintf(out, "SARIF:    %s\n", r.ReportSARIFPath)
+	}
 	fmt.Fprintf(out, "Findings: %s\n", r.RunDir+string(os.PathSeparator)+run.FileFindings)
 	fmt.Fprintf(out, "Log:      %s\n", r.RunDir+string(os.PathSeparator)+run.FileLog)
 }

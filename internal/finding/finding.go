@@ -16,14 +16,14 @@ const SchemaVersion = "1.0"
 // per-finding version is pinned by "const": "1.0" in
 // schema/finding.schema.json -- so moving that value would invalidate every
 // document ever written, to describe a change that did not touch a finding.
-const DocumentSchemaVersion = "1.1"
+const DocumentSchemaVersion = "1.2"
 
 // SupportedDocumentSchemaVersions are the envelope versions this build reads.
 //
 // Older run directories stay usable, which is what keeps `vibekiller diff`
 // working across an upgrade. A 1.0 document simply has no skipped list, and
 // the diff is explicit about what it cannot conclude from one.
-var SupportedDocumentSchemaVersions = []string{"1.0", DocumentSchemaVersion}
+var SupportedDocumentSchemaVersions = []string{"1.0", "1.1", DocumentSchemaVersion}
 
 // Severity ranks how bad a finding is if exploited.
 type Severity string
@@ -289,6 +289,25 @@ type SkippedCheck struct {
 	Reason  string `json:"reason"`
 }
 
+// FailedCheck records a check that ran and broke, which is a different fact
+// from one that never ran and needs a different response: a consumer should
+// retry a failure and not retry a skip. Keeping them in separate arrays is why
+// neither needs a discriminator field.
+type FailedCheck struct {
+	CheckID string `json:"check_id"`
+	Layer   string `json:"layer,omitempty"`
+	Error   string `json:"error"`
+}
+
+// Coverage is everything a run can say about what it did not establish. It is
+// grouped rather than passed as a widening list of slices, because the SARIF
+// writer and findings.json both want the whole of it and more kinds of "we
+// did not look" are plausible later.
+type Coverage struct {
+	Skipped []SkippedCheck
+	Failed  []FailedCheck
+}
+
 // SourceForLayer maps a check's layer to the finding source that layer
 // produces, which is how a skip is connected to the findings it suppressed.
 //
@@ -331,6 +350,12 @@ type Document struct {
 	// omitted when empty so a run in which everything ran looks exactly as
 	// it did before this field existed.
 	Skipped []SkippedCheck `json:"skipped,omitempty"`
+
+	// Failed is every check that ran and errored. A failure suppresses
+	// findings exactly as a skip does -- semgrep exiting non-zero means its
+	// findings are absent for a reason that is not "fixed" -- so a reader
+	// that ignores this array draws the same wrong conclusion.
+	Failed []FailedCheck `json:"failed,omitempty"`
 }
 
 // Counts summarizes a run for quick CI consumption.

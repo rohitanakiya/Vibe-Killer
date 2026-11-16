@@ -275,7 +275,7 @@ func TestAFindingIsNotFixedWhenItsCheckWasSkipped(t *testing.T) {
 	if res.Counts.Unchecked != 1 {
 		t.Fatalf("unchecked = %d, want 1", res.Counts.Unchecked)
 	}
-	if r := res.Unchecked[0].SkipReason; !strings.Contains(r, "--target") {
+	if r := res.Unchecked[0].Reason; !strings.Contains(r, "--target") {
 		t.Errorf("skip reason = %q, want the reason carried through", r)
 	}
 	// The status is left alone. Marking it fixed was the bug; marking it
@@ -303,7 +303,7 @@ func TestAScannerSkipIsJoinedThroughItsLayer(t *testing.T) {
 	if res.Counts.Unchecked != 1 || res.Counts.Fixed != 0 {
 		t.Fatalf("unchecked = %d, fixed = %d, want 1 and 0", res.Counts.Unchecked, res.Counts.Fixed)
 	}
-	if r := res.Unchecked[0].SkipReason; !strings.Contains(r, "osv-scanner") {
+	if r := res.Unchecked[0].Reason; !strings.Contains(r, "osv-scanner") {
 		t.Errorf("skip reason = %q, want it to name the missing scanner", r)
 	}
 }
@@ -359,5 +359,54 @@ func TestUncheckedFindingsBlockTheImprovedGate(t *testing.T) {
 	}
 	if p := res.Progress(); !strings.Contains(p, "inconclusive") {
 		t.Errorf("Progress() = %q, want it to refuse a verdict", p)
+	}
+}
+
+// Issue #2: a check that ran and broke established no more than one that never
+// ran, but only skips were consulted, so a scanner crashing between runs read
+// as every one of its findings being fixed.
+func TestAFindingIsNotFixedWhenItsCheckFailed(t *testing.T) {
+	vuln := withSource("deps.known-vulnerability", "lodash", finding.SourceDeps)
+
+	from := doc("run-1", vuln)
+	to := doc("run-2")
+	to.Failed = []finding.FailedCheck{{
+		CheckID: "engine.osv-scanner",
+		Layer:   "deps",
+		Error:   "osv-scanner exited with status 2: could not resolve lockfile",
+	}}
+
+	res := Compare(from, to)
+
+	if res.Counts.Fixed != 0 {
+		t.Errorf("fixed = %d, want 0: the scanner crashed", res.Counts.Fixed)
+	}
+	if res.Counts.Unchecked != 1 {
+		t.Fatalf("unchecked = %d, want 1", res.Counts.Unchecked)
+	}
+	r := res.Unchecked[0].Reason
+	if !strings.Contains(r, "failed") || !strings.Contains(r, "status 2") {
+		t.Errorf("reason = %q, want it to say the check failed and carry the error", r)
+	}
+	if res.Improved() {
+		t.Error("Improved() = true, want false when a check failed")
+	}
+}
+
+// Skips and failures arrive together in a partly broken run, and both have to
+// be honoured rather than whichever is consulted first.
+func TestSkippedAndFailedChecksAreBothHonoured(t *testing.T) {
+	skippedOne := f("idor.a", "handlerA", finding.SeverityHigh, finding.ConfidenceLikely, finding.StatusOpen)
+	failedOne := withSource("deps.known-vulnerability", "lodash", finding.SourceDeps)
+
+	from := doc("run-1", skippedOne, failedOne)
+	to := doc("run-2")
+	to.Skipped = []finding.SkippedCheck{{CheckID: "idor.a", Layer: "endpoint", Reason: "no running instance was given (pass --target)"}}
+	to.Failed = []finding.FailedCheck{{CheckID: "engine.osv-scanner", Layer: "deps", Error: "exited with status 2"}}
+
+	res := Compare(from, to)
+
+	if res.Counts.Unchecked != 2 || res.Counts.Fixed != 0 {
+		t.Fatalf("unchecked = %d, fixed = %d, want 2 and 0", res.Counts.Unchecked, res.Counts.Fixed)
 	}
 }
