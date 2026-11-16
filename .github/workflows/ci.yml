@@ -5,6 +5,14 @@
 # that the rule pack is *completely silent* on the patched fixtures. That claim
 # is only worth anything if it is re-checked on every push, which is what this
 # workflow is for.
+#
+# The dynamic job is the one that tests the claim rather than the code. Every
+# other job proves a check against a stand-in: the rule pack against fixture
+# source, the endpoint checks against httptest handlers written here to answer
+# the way a vulnerable app is expected to answer. That job starts the fixture
+# and points a real --target scan at it, so "reproduced against the running
+# instance" is something a server did and not something this repository
+# asserts about itself.
 name: CI
 
 on:
@@ -275,3 +283,47 @@ jobs:
               assert want in ids, f"{want} is absent from the skip list: {sorted(ids)}"
           print(f"coverage ok: {len(skipped)} checks recorded as not run")
           PY
+
+  dynamic:
+    name: dynamic (live fixture)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Read-only like the rest. Nothing here reaches outside the runner: the
+    # fixture binds 127.0.0.1, and 127.0.0.1:5000 is in the committed config's
+    # authorized_targets, which is the list the scope guard enforces.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      # 3.12 rather than the newest, and the fixture is the reason. Its pins
+      # are deliberately old so the dependency check finds advisories for
+      # them, and Werkzeug 2.0.1 calls ast.Str, which Python removed after
+      # 3.12. The pins are the point of that fixture, so the interpreter
+      # moves instead.
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      # This is the job that asks a real server. Everything else tests the
+      # endpoint checks against httptest handlers written in Go -- which
+      # proves the check against our own idea of the application and nothing
+      # further. The Django extractor had exactly that shape of hole: the code
+      # looked right, the tests agreed with it, and nothing had asked Django.
+      #
+      # Two runs, and the second one carries the weight. `confidence:
+      # confirmed` is documented as reserved for a finding that was re-run
+      # against the instance, so zero confirmed findings against corrected
+      # code is the claim worth pinning -- while still allowing a heuristic
+      # finding at `likely`, which the patched fixture does produce for an
+      # endpoint that really is anonymous.
+      - name: Reproduce against the vulnerable fixture
+        run: bash scripts/dynamic-check.sh vulnerable
+
+      - name: Confirm nothing against the patched fixture
+        run: bash scripts/dynamic-check.sh patched
