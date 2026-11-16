@@ -1,5 +1,14 @@
-# The fastapi-vulnerable fixture's dependencies, brought up to date so the
-# dependency check has nothing to report.
+# The fastapi-vulnerable fixture's dependencies, pinned to the versions that
+# were current when this fixture was written.
+#
+# Not a claim that the dependency check finds nothing here. It said that once
+# and the comment rotted: advisories keep being published against versions
+# that were clean when they were pinned, so a patched fixture drifts into
+# having dependency findings without anything changing in the repository. A
+# real scan of this fixture reports some, and that is the dependency data
+# being current rather than the fixture being wrong. What the suite does
+# assert about the patched fixtures is that the *rule pack* is silent on them,
+# which is a claim about this project's own rules.
 fastapi==0.115.6
 starlette==0.41.3
 pydantic==2.10.4
