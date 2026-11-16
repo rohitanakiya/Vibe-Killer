@@ -32,6 +32,14 @@ inputs:
     description: Go toolchain used to install the binary. The module needs 1.26 or newer.
     required: false
     default: "1.26"
+  install:
+    description: >
+      "auto" installs the version above. "skip" assumes vibekiller is already
+      on PATH, which is what lets this repository test the action against the
+      build in the working tree rather than against the last release -- and
+      what lets anyone else run their own build through it.
+    required: false
+    default: auto
   static-only:
     description: >
       Analyze the repository and make no outbound connection of any kind. This
@@ -104,14 +112,26 @@ runs:
   using: composite
   steps:
     - name: Set up Go
+      if: inputs.install != 'skip'
       uses: actions/setup-go@v7
       with:
         go-version: ${{ inputs.go-version }}
         cache: false
 
     - name: Install Vibe Killer
+      if: inputs.install != 'skip'
       shell: bash
       run: go install "github.com/rohitanakiya/Vibe-Killer/cmd/vibekiller@${{ inputs.version }}"
+
+    - name: Check Vibe Killer is available
+      shell: bash
+      run: |
+        set -euo pipefail
+        if ! command -v vibekiller >/dev/null 2>&1; then
+          echo "::error::vibekiller is not on PATH. With install: skip you must put it there yourself."
+          exit 2
+        fi
+        vibekiller --version
 
     - name: Install wrapped scanners
       shell: bash
