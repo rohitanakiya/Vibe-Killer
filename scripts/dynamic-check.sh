@@ -160,8 +160,18 @@ express)
     ;;
 esac
 
+# The sleep is the whole point of this loop, and leaving it out is what broke
+# the FastAPI leg in CI while every local run passed.
+#
+# curl returns immediately when nothing is listening, so an attempt costs
+# microseconds rather than the --max-time it looks like it costs. Without a
+# delay, 150 attempts burn through in well under a second: Flask binds fast
+# enough to be caught anyway, uvicorn has fastapi and pydantic to import
+# first, and the loop was finishing before the server existed. The budget has
+# to be wall-clock time, not a number of attempts.
 ready=""
-for _ in $(seq 1 150); do
+WAITED=0
+for _ in $(seq 1 120); do
     if [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "$TARGET/health" || true)" = "200" ]; then
         ready="yes"
         break
@@ -171,13 +181,15 @@ for _ in $(seq 1 150); do
         cat "$WORK/app.log" >&2
         exit 1
     fi
+    sleep 0.5
+    WAITED=$((WAITED + 1))
 done
 if [ -z "$ready" ]; then
-    echo "the fixture never answered $TARGET/health:" >&2
+    echo "the fixture never answered $TARGET/health after $((WAITED / 2))s:" >&2
     cat "$WORK/app.log" >&2
     exit 1
 fi
-echo "    up"
+echo "    up after $((WAITED / 2))s"
 
 # --- scan it ----------------------------------------------------------------
 #
