@@ -553,8 +553,25 @@ it is pattern-matching on the domain — so `fixtures/*-vulnerable` and
 `fixtures/*-patched` are the same application with and without each fix, and
 the suite asserts the pack is **completely silent** on the patched versions.
 
-Fixtures exist in two unrelated stacks (Express and Flask) so the
-auto-detection and adapter path is itself under test, not just the checks.
+Fixtures exist in three stacks -- Express, Flask and FastAPI -- so the
+auto-detection and adapter path is itself under test, not just the checks. The
+FastAPI pair was added for a narrower reason: the Python adapter had always
+claimed FastAPI support, resolving `APIRouter(prefix=...)` through
+`include_router`, and nothing exercised it. Getting that prefix wrong means
+every endpoint check requests a 404 and reports nothing, which is
+indistinguishable from an application with no problems.
+
+Writing it also measured how much of the rule pack travels. Six rules fire on
+the FastAPI fixture and the pack is silent on its patched twin, but the
+`fastapi-vulnerable` expectation list is deliberately shorter than Flask's:
+several rules are shaped around Flask and Django request idioms and cannot
+match FastAPI at all. The taint rules take their sources from `request.args`,
+`request.form` and `request.json`, which FastAPI does not have, and
+`idor-missing-ownership-check` is keyed on `@$APP.route(...)`, which
+`@router.get(...)` does not match -- so the pack's flagship access-control
+rule is silent on FastAPI even though the endpoint check still proves the
+weakness over HTTP. The fixture records that rather than hiding it; the
+`FRAMEWORK-GAP` comments in it say which weakness is unreported and why.
 
 The endpoint checks are tested against in-process servers, so they are
 hermetic — no `npm install`, no ports. The rule-pack behaviour test drives real

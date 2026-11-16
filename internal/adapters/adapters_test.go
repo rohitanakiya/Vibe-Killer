@@ -38,6 +38,8 @@ func TestDetectionIsStackAgnostic(t *testing.T) {
 		{"express-patched", "node", "javascript", "express"},
 		{"flask-vulnerable", "python", "python", "flask"},
 		{"flask-patched", "python", "python", "flask"},
+		{"fastapi-vulnerable", "python", "python", "fastapi"},
+		{"fastapi-patched", "python", "python", "fastapi"},
 	}
 
 	for _, tc := range tests {
@@ -411,4 +413,72 @@ func contains(haystack []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+// FastAPI route extraction has existed in the Python adapter since it was
+// written -- APIRouter prefixes and include_router mounts -- but nothing
+// exercised it, so "implemented" and "working" were the same word for it. This
+// is the test that separates them.
+//
+// The prefix is the part worth asserting. A router declared with
+// APIRouter(prefix="/api") and mounted with include_router(router) produces
+// paths that appear nowhere in the source: the decorator says "/orders/{id}"
+// and the real route is "/api/orders/{id}". Getting that wrong means every
+// endpoint check requests a 404 and reports nothing, which looks exactly like
+// an application with no problems.
+func TestPythonRouteEnumerationHandlesFastAPIRouters(t *testing.T) {
+	root := fixturePath(t, "fastapi-vulnerable")
+
+	routes, err := (&Python{}).EnumerateRoutes(context.Background(), root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(routes) == 0 {
+		t.Fatal("no routes were found in the FastAPI fixture")
+	}
+
+	byEndpoint := map[string]surface.Route{}
+	for _, r := range routes {
+		byEndpoint[r.Endpoint()] = r
+	}
+
+	// Every one of these is declared on a prefixed router, so the /api is
+	// resolved rather than written.
+	for _, want := range []string{
+		"GET /api/orders/{order_id}",
+		"GET /api/profiles/{profile_id}",
+		"POST /api/orders",
+		"GET /api/search",
+		"GET /api/files/{name}",
+		"POST /api/import",
+		"GET /api/session",
+		"POST /api/reset",
+	} {
+		if _, ok := byEndpoint[want]; !ok {
+			t.Errorf("route %q was not found; got %v", want, endpoints(routes))
+		}
+	}
+
+	// A route declared directly on the app must not pick up the router's
+	// prefix.
+	if _, ok := byEndpoint["GET /health"]; !ok {
+		t.Errorf("GET /health was not found unprefixed; got %v", endpoints(routes))
+	}
+
+	order := byEndpoint["GET /api/orders/{order_id}"]
+	if order.Handler != "get_order" {
+		t.Errorf("handler = %q, want get_order (read from the def below the decorator)", order.Handler)
+	}
+	// The file and line are what let a dynamic finding be annotated on the
+	// handler that serves it, which is how the SARIF writer places an
+	// endpoint alert on real code.
+	if order.File == "" || order.Line <= 0 {
+		t.Errorf("route has no source location: file=%q line=%d", order.File, order.Line)
+	}
+
+	// FastAPI's {id} is already the normalized form, so it must survive
+	// untouched rather than being re-written.
+	if strings.Contains(order.Path, "<") || strings.Contains(order.Path, ":") {
+		t.Errorf("path %q was mangled by normalization", order.Path)
+	}
 }

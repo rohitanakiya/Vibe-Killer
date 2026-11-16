@@ -457,3 +457,49 @@ func TestADependencyFindingNamesThePackage(t *testing.T) {
 		t.Errorf("fullyQualifiedName = %q, want the ecosystem-qualified package", got)
 	}
 }
+
+// A clean scan is the result everyone hopes for, and the one most likely to be
+// uploaded without anyone reading it. It must still be a valid document.
+//
+// It was not: an empty rule list was a nil slice, which marshals to null,
+// while GitHub requires rules to be an array. Asserting over the JSON rather
+// than the structs is the point -- the Go value was an acceptable nil, and
+// only the serialized form was wrong.
+func TestAnEmptyRunIsStillValidSARIF(t *testing.T) {
+	raw, err := json.Marshal(Convert(doc(), Options{ToolVersion: "0.2.0"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatal(err)
+	}
+	run := m["runs"].([]any)[0].(map[string]any)
+	driver := run["tool"].(map[string]any)["driver"].(map[string]any)
+
+	rules, ok := driver["rules"].([]any)
+	if !ok {
+		t.Fatalf("tool.driver.rules serialized as %T (%v), want an array", driver["rules"], driver["rules"])
+	}
+	if len(rules) != 0 {
+		t.Errorf("rules = %d, want none", len(rules))
+	}
+
+	results, ok := run["results"].([]any)
+	if !ok {
+		t.Fatalf("results serialized as %T, want an array", run["results"])
+	}
+	if len(results) != 0 {
+		t.Errorf("results = %d, want none", len(results))
+	}
+
+	// Nothing was skipped either, so there is no invocation to report.
+	if _, present := run["invocations"]; present {
+		t.Errorf("invocations is present on a run with no coverage gaps: %v", run["invocations"])
+	}
+
+	if !strings.Contains(string(raw), `"rules":[]`) {
+		t.Errorf("rules did not serialize as an empty array:\n%s", raw)
+	}
+}

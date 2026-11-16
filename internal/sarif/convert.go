@@ -118,7 +118,15 @@ type converter struct {
 func (c *converter) rules(findings []finding.Finding) ([]ReportingDescriptor, map[string]int) {
 	index := map[string]int{}
 	strongest := map[string]float64{}
-	var out []ReportingDescriptor
+
+	// Not a nil slice, and not a stylistic preference: a nil slice marshals
+	// to null, GitHub requires rules to be an array, and a run that found
+	// nothing is exactly when the rule list is empty. So a clean scan -- the
+	// result everyone is hoping for, and the one most likely to be uploaded
+	// without anyone looking -- produced a document that would be rejected.
+	// Every local check of this writer happened to run against a scan with
+	// findings, which is why only the no-scanner path in CI exposed it.
+	out := []ReportingDescriptor{}
 
 	for _, f := range findings {
 		sev := securitySeverity(f.Severity)

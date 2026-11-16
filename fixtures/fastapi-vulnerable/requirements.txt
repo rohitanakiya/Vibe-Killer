@@ -1,0 +1,10 @@
+# Deliberately vulnerable FastAPI fixture for Vibe Killer's test suite.
+# The pinned versions are old on purpose: the dependency check should find
+# published advisories for them.
+fastapi==0.68.0
+starlette==0.14.2
+pydantic==1.8.1
+python-multipart==0.0.5
+PyJWT==1.7.1
+requests==2.25.1
+uvicorn==0.15.0

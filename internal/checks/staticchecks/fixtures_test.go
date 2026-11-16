@@ -117,6 +117,22 @@ func TestRulePackFiresOnVulnerableFixtures(t *testing.T) {
 			},
 		},
 		{
+			// The third stack. The list is shorter than Flask's and that is
+			// the finding rather than an oversight: several rules in the pack
+			// are shaped around Flask and Django request idioms and cannot
+			// match FastAPI, so they are deliberately absent here. See the
+			// FRAMEWORK-GAP notes in the fixture.
+			fixture: "fastapi-vulnerable",
+			wantRule: []string{
+				"injection.sql-string-built-from-input",
+				"traversal.path-built-from-input",
+				"auth.jwt-not-verified",
+				"crypto.password-fast-digest",
+				"crypto.predictable-token",
+				"crypto.non-constant-time-comparison",
+			},
+		},
+		{
 			fixture: "express-vulnerable",
 			wantRule: []string{
 				"idor.missing-ownership-check",
@@ -166,7 +182,7 @@ func TestRulePackFiresOnVulnerableFixtures(t *testing.T) {
 func TestRulePackIsSilentOnPatchedFixtures(t *testing.T) {
 	requireSemgrep(t)
 
-	for _, fixture := range []string{"flask-patched", "express-patched"} {
+	for _, fixture := range []string{"flask-patched", "express-patched", "fastapi-patched"} {
 		t.Run(fixture, func(t *testing.T) {
 			fs := runSemgrep(t, fixture)
 			if len(fs) == 0 {
@@ -186,7 +202,7 @@ func TestRulePackIsSilentOnPatchedFixtures(t *testing.T) {
 func TestStaticFindingsNeverClaimConfirmed(t *testing.T) {
 	requireSemgrep(t)
 
-	for _, fixture := range []string{"flask-vulnerable", "express-vulnerable"} {
+	for _, fixture := range []string{"flask-vulnerable", "express-vulnerable", "fastapi-vulnerable"} {
 		for _, f := range runSemgrep(t, fixture) {
 			if f.Confidence == finding.ConfidenceConfirmed {
 				t.Errorf("%s (%s) claims confirmed confidence from a static scan", f.RuleID, fixture)
@@ -200,7 +216,7 @@ func TestStaticFindingsNeverClaimConfirmed(t *testing.T) {
 func TestSecretFindingsRequireAHuman(t *testing.T) {
 	requireSemgrep(t)
 
-	for _, fixture := range []string{"flask-vulnerable", "express-vulnerable"} {
+	for _, fixture := range []string{"flask-vulnerable", "express-vulnerable", "fastapi-vulnerable"} {
 		for _, f := range runSemgrep(t, fixture) {
 			if f.Category != finding.CategorySecretsExposure {
 				continue
