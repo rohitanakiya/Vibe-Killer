@@ -9,6 +9,7 @@ from django.http import JsonResponse
 from django.views import View
 from django.views.decorators.http import require_POST, require_http_methods
 from rest_framework import viewsets
+from rest_framework.decorators import action
 
 ORDERS = [{"id": 1, "item": "Decoy order"}]
 
@@ -53,10 +54,25 @@ class BoardList(View):
 
 class TicketViewSet(viewsets.ModelViewSet):
     """ModelViewSet promises all six actions, so the router generates all six
-    routes from it."""
+    routes from it, and each @action below adds one more that nothing else in
+    the source names."""
 
     queryset = None
     serializer_class = None
+
+    @action(detail=True, methods=["post"], url_path="mark-paid")
+    def mark_paid(self, request, pk=None):
+        return JsonResponse({"ok": True})
+
+    @action(detail=False)
+    def summary(self, request):
+        """No methods argument, which DRF reads as GET. The url_path is
+        generated from the name, with underscores turned into hyphens."""
+        return JsonResponse({"count": 0})
+
+    @action(detail=True, methods=["get", "delete"])
+    def audit_log(self, request, pk=None):
+        return JsonResponse({"entries": []})
 
 
 class ReportViewSet(viewsets.ReadOnlyModelViewSet):

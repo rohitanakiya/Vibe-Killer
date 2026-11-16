@@ -38,8 +38,10 @@ internal/runtime/agents/*  text eol=lf
 fixtures/*/package-lock.json  -diff linguist-generated
 
 # Make GitHub's language stats describe the tool, not its test inputs. The
-# fixtures are deliberately vulnerable Node and Python apps, and
-# rules/testdata holds the per-rule behaviour fixtures in the same two
-# languages; left unmarked they make a Go project look like a JavaScript one.
-fixtures/**        linguist-vendored
-rules/testdata/**  linguist-vendored
+# fixtures are deliberately vulnerable Node and Python apps, rules/testdata
+# holds the per-rule behaviour fixtures in the same two languages, and
+# internal/adapters/testdata holds a Django project that exists only to be
+# parsed; left unmarked they make a Go project look like a JavaScript one.
+fixtures/**                      linguist-vendored
+rules/testdata/**                linguist-vendored
+internal/adapters/testdata/**    linguist-vendored

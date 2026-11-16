@@ -78,7 +78,19 @@ func TestDjangoURLConfTreeIsResolved(t *testing.T) {
 		"GET /api/reports",
 		"GET /api/reports/{pk}",
 
-		// re_path patterns, with the regex syntax stripped.
+		// An @action is a route too, and the only thing in the source that
+		// names it is the decorator. url_path wins where it is given;
+		// otherwise DRF generates the segment from the method name with
+		// underscores turned into hyphens, so reading the name verbatim would
+		// produce a path the server answers 404 for.
+		"POST /api/tickets/{pk}/mark-paid",
+		"GET /api/tickets/summary",
+		"GET /api/tickets/{pk}/audit-log",
+		"DELETE /api/tickets/{pk}/audit-log",
+
+		// re_path patterns, with the regex syntax stripped. legacy/urls.py is
+		// reached through include(("legacy.urls", "legacy"), namespace=...),
+		// the namespacing form, so these also pin that it parses.
 		"GET /legacy/profiles/{profile_id}",
 		"GET /legacy/reports/{param}",
 	}
@@ -117,8 +129,10 @@ func TestDjangoUnroutedViewsAreNotEndpoints(t *testing.T) {
 			t.Errorf("%s points at a view that no URLconf routes", r.Endpoint())
 		}
 		if r.Method == "DELETE" && !strings.Contains(r.Path, "tickets") {
-			t.Errorf("%s is a DELETE that nothing declares; the only one in this "+
-				"project is the ticket viewset's destroy action", r.Endpoint())
+			t.Errorf("%s is a DELETE that nothing declares; the only ones in this "+
+				"project are the ticket viewset's destroy action and its "+
+				"audit_log action, which states methods=[\"get\", \"delete\"]",
+				r.Endpoint())
 		}
 	}
 }

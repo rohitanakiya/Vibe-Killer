@@ -54,8 +54,12 @@ import (
 var (
 	// path("api/", include("orders.urls")) -- and re_path/url, and the
 	// namespace and app_name arguments that may follow.
+	//
+	// The optional paren before the module allows the namespacing form,
+	// include(("orders.urls", "orders"), namespace="orders"), which is
+	// common enough that not matching it would drop a whole app's routes.
 	djangoIncludeRe = regexp.MustCompile(
-		`\b(?:path|re_path|url)\s*\(\s*(?:r|b|f|u)?(['"])([^'"]*)['"]\s*,\s*include\s*\(\s*(?:r|b|f|u)?(['"])([^'"]*)['"]`)
+		`\b(?:path|re_path|url)\s*\(\s*(?:r|b|f|u)?(['"])([^'"]*)['"]\s*,\s*include\s*\(\s*\(?\s*(?:r|b|f|u)?(['"])([^'"]*)['"]`)
 
 	// path("api/", include(router.urls)) -- a DRF router mounted as a whole.
 	djangoIncludeRouterRe = regexp.MustCompile(
@@ -100,6 +104,19 @@ var (
 	// A DRF action method on a ViewSet.
 	djangoViewSetActionRe = regexp.MustCompile(
 		`(?m)^\s+(?:async\s+)?def\s+(list|create|retrieve|update|partial_update|destroy)\s*\(`)
+
+	// @action(detail=True, methods=["post"], url_path="mark-paid")
+	// def mark_paid(self, request, pk=None)
+	//
+	// A router generates a route per extra action as well as per standard
+	// one, so a viewset with three @action methods exposes three endpoints
+	// that nothing else in the source names.
+	djangoExtraActionRe = regexp.MustCompile(
+		`(?ms)@\s*action\s*\(([^)]*)\)\s*\n\s+(?:async\s+)?def\s+(\w+)\s*\(`)
+
+	djangoActionMethodsRe = regexp.MustCompile(`methods\s*=\s*[\[(]([^\])]*)[\])]`)
+	djangoActionDetailRe  = regexp.MustCompile(`detail\s*=\s*(True|False)`)
+	djangoActionURLPathRe = regexp.MustCompile(`url_path\s*=\s*(?:r|b|f|u)?(['"])([^'"]*)['"]`)
 )
 
 // djangoEntry is one line of a urlpatterns list.
@@ -485,6 +502,24 @@ func (p *djangoProject) appendViewSetRoutes(conf *djangoConf, reg djangoRegistra
 		file, line = conf.file.Path, reg.line
 	}
 
+	emit := func(raw, handler, method string) {
+		tmpl, params := NormalizePathTemplate(raw)
+		if tmpl == "" {
+			return
+		}
+		*out = append(*out, surface.Route{
+			Method:       method,
+			Path:         tmpl,
+			PathParams:   params,
+			File:         file,
+			Line:         line,
+			Handler:      handler,
+			Middleware:   view.decorators,
+			DeclaredAuth: view.auth,
+			Mutating:     surface.IsMutating(method),
+		})
+	}
+
 	for _, a := range drfActionMethods {
 		if !actions[a.action] {
 			continue
@@ -493,22 +528,57 @@ func (p *djangoProject) appendViewSetRoutes(conf *djangoConf, reg djangoRegistra
 		if a.detail {
 			raw = detailPath
 		}
-		tmpl, params := NormalizePathTemplate(raw)
-		if tmpl == "" {
-			continue
-		}
-		*out = append(*out, surface.Route{
-			Method:       a.method,
-			Path:         tmpl,
-			PathParams:   params,
-			File:         file,
-			Line:         line,
-			Handler:      view.name + "." + a.action,
-			Middleware:   view.decorators,
-			DeclaredAuth: view.auth,
-			Mutating:     surface.IsMutating(a.method),
-		})
+		emit(raw, view.name+"."+a.action, a.method)
 	}
+
+	// An @action method is a route too, and its methods are stated in the
+	// decorator rather than inherited from a base class.
+	for _, extra := range view.extras {
+		base := listPath
+		if extra.detail {
+			base = detailPath
+		}
+		for _, method := range extra.methods {
+			emit(JoinPrefix(base, extra.urlPath), view.name+"."+extra.name, method)
+		}
+	}
+}
+
+// djangoExtraActions reads the @action-decorated methods out of a viewset
+// body.
+//
+// url_path overrides the generated segment; without it DRF uses the method
+// name with underscores turned into hyphens, so mark_paid is served at
+// mark-paid and reading the name verbatim would produce a path the server
+// answers 404 for.
+func djangoExtraActions(body string) []djangoExtraAction {
+	var out []djangoExtraAction
+
+	for _, m := range djangoExtraActionRe.FindAllStringSubmatch(body, -1) {
+		args, name := m[1], m[2]
+
+		extra := djangoExtraAction{name: name, urlPath: strings.ReplaceAll(name, "_", "-")}
+		if u := djangoActionURLPathRe.FindStringSubmatch(args); u != nil {
+			extra.urlPath = u[2]
+		}
+		if d := djangoActionDetailRe.FindStringSubmatch(args); d != nil {
+			extra.detail = d[1] == "True"
+		}
+		if mm := djangoActionMethodsRe.FindStringSubmatch(args); mm != nil {
+			for _, part := range strings.Split(mm[1], ",") {
+				part = strings.ToUpper(strings.Trim(strings.TrimSpace(part), `'"`))
+				if part != "" {
+					extra.methods = appendUnique(extra.methods, part)
+				}
+			}
+		}
+		if len(extra.methods) == 0 {
+			// DRF's own default when methods is omitted.
+			extra.methods = []string{"GET"}
+		}
+		out = append(out, extra)
+	}
+	return out
 }
 
 // djangoView is what could be learned about a view from its own module.
@@ -524,6 +594,18 @@ type djangoView struct {
 	// viewsets.
 	bases   []string
 	actions []string
+
+	// extras are the @action methods a router exposes beyond the standard
+	// six.
+	extras []djangoExtraAction
+}
+
+// djangoExtraAction is one @action-decorated method on a viewset.
+type djangoExtraAction struct {
+	name    string
+	urlPath string
+	detail  bool
+	methods []string
 }
 
 // resolveView finds the module a view reference names and reads what it says.
@@ -610,6 +692,7 @@ func readDjangoView(f SourceFile, symbol string) *djangoView {
 			for _, mm := range djangoViewSetActionRe.FindAllStringSubmatch(body, -1) {
 				view.actions = appendUnique(view.actions, mm[1])
 			}
+			view.extras = djangoExtraActions(body)
 			if mm := djangoHTTPMethodNamesRe.FindStringSubmatch(body); mm != nil {
 				var declared []string
 				for _, part := range strings.Split(mm[1], ",") {
