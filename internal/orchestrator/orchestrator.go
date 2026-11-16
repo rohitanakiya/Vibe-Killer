@@ -9,6 +9,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"runtime/debug"
 	"sort"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/rohitanakiya/Vibe-Killer/internal/check"
 	"github.com/rohitanakiya/Vibe-Killer/internal/finding"
+	"github.com/rohitanakiya/Vibe-Killer/internal/tool"
 )
 
 // DefaultWorkers is the worker count when none is configured.
@@ -181,6 +183,37 @@ func (o *Orchestrator) Run(ctx context.Context, checks []check.Check, env *check
 				mu.Lock()
 				report.Ran++
 				if err != nil {
+					// An absent optional scanner is not a failure, and
+					// tool.ErrNotInstalled has said so in its own
+					// documentation all along -- "the orchestrator records
+					// the scanner as skipped and continues" -- while this
+					// branch classified every error the same way. The
+					// distinction is not cosmetic: a skip is a deliberate
+					// gap the operator can close by installing something,
+					// a failure is something broken, and they belong in
+					// different sections of the report, carry different
+					// SARIF levels, and warrant different responses from a
+					// consumer. The error text already carries the install
+					// hint, so it makes the reason as it stands.
+					var absent *tool.ErrNotInstalled
+					if errors.As(err, &absent) {
+						reason := err.Error()
+						report.Skipped = append(report.Skipped, check.SkipReason{
+							RuleID: m.RuleID, Layer: m.Layer, Reason: reason,
+						})
+						mu.Unlock()
+
+						if env.Run != nil {
+							env.Run.Log("check.skipped", map[string]any{
+								"rule_id": m.RuleID,
+								"layer":   string(m.Layer),
+								"reason":  reason,
+							})
+						}
+						o.emit(Event{Kind: EventSkipped, RuleID: m.RuleID, Title: m.Title, Layer: m.Layer, Reason: reason, Elapsed: elapsed})
+						continue
+					}
+
 					report.Failed = append(report.Failed, CheckError{RuleID: m.RuleID, Layer: m.Layer, Err: err})
 					mu.Unlock()
 

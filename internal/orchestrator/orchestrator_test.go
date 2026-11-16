@@ -14,6 +14,7 @@ import (
 	"github.com/rohitanakiya/Vibe-Killer/internal/finding"
 	"github.com/rohitanakiya/Vibe-Killer/internal/run"
 	"github.com/rohitanakiya/Vibe-Killer/internal/surface"
+	"github.com/rohitanakiya/Vibe-Killer/internal/tool"
 )
 
 // stubCheck is a check whose behaviour the test controls.
@@ -477,5 +478,47 @@ func TestSurfaceWithNoRoutesIsReportedAsASkip(t *testing.T) {
 	}
 	if report.Ran != 1 {
 		t.Errorf("ran = %d, want only the check that does not need routes", report.Ran)
+	}
+}
+
+// An optional scanner that is not installed is a coverage gap, not a broken
+// scan. tool.ErrNotInstalled documented that the orchestrator "records the
+// scanner as skipped and continues" long before this branch existed; every
+// error was classified as a failure instead, so a CI box without semgrep
+// reported a failing check rather than a missing one.
+func TestAnAbsentScannerIsSkippedNotFailed(t *testing.T) {
+	env := testEnv(t)
+	o := New(Options{Workers: 2})
+
+	absent := &stubCheck{
+		meta: meta("engine.semgrep", check.LayerStatic),
+		err:  &tool.ErrNotInstalled{Name: "semgrep", Hint: "install with: pipx install semgrep"},
+	}
+	broken := &stubCheck{
+		meta: meta("engine.osv-scanner", check.LayerDeps),
+		err:  errors.New("osv-scanner exited with status 2"),
+	}
+
+	report, err := o.Run(context.Background(), []check.Check{absent, broken}, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(report.Skipped) != 1 || report.Skipped[0].RuleID != "engine.semgrep" {
+		t.Fatalf("skipped = %v, want just the absent scanner", report.Skipped)
+	}
+	// The reason has to be actionable, and the error text already carries the
+	// install hint.
+	if r := report.Skipped[0].Reason; !strings.Contains(r, "not installed") || !strings.Contains(r, "pipx install semgrep") {
+		t.Errorf("skip reason = %q, want it to name the tool and how to install it", r)
+	}
+	if report.Skipped[0].Layer != check.LayerStatic {
+		t.Errorf("layer = %q, want it carried so the skip can be joined to its findings", report.Skipped[0].Layer)
+	}
+
+	// A real failure must still be a failure, or this change would trade one
+	// misclassification for another.
+	if len(report.Failed) != 1 || report.Failed[0].RuleID != "engine.osv-scanner" {
+		t.Fatalf("failed = %v, want just the broken scanner", report.Failed)
 	}
 }

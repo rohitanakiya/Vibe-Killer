@@ -180,3 +180,98 @@ jobs:
       # imported directly but still marked // indirect.
       - name: go.mod is tidy
         run: go mod tidy -diff
+
+  action:
+    name: action (self-test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # No security-events here on purpose. The action can upload SARIF, but
+    # this repository ships deliberately vulnerable fixtures, so uploading its
+    # own results would fill the Security tab with alerts about code that is
+    # meant to be exploitable. The upload step is exercised by being skipped
+    # with upload-sarif: false; what this job proves is everything up to it.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      # install: skip exists for this. Without it the action would install the
+      # last release, and a self-test would prove the action works against code
+      # from before the change being tested -- which is the opposite of a test.
+      - name: Build this tree and put it on PATH
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          go build -o "$RUNNER_TEMP/bin/vibekiller" ./cmd/vibekiller
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      # No scanners, which keeps this to about a minute. Their coverage is
+      # tested by the rulepack job; what is under test here is the action's own
+      # plumbing -- inputs, outputs, the run directory it locates, the step
+      # summary and the artifact.
+      - name: Run the action against this repository
+        id: vk
+        uses: ./
+        with:
+          install: skip
+          scanners: ""
+          static-only: true
+          upload-sarif: false
+          fail-on-findings: false
+
+      - name: The action produced what it promises
+        run: |
+          set -euo pipefail
+
+          dir='${{ steps.vk.outputs.run-dir }}'
+          sarif='${{ steps.vk.outputs.sarif-file }}'
+          findings='${{ steps.vk.outputs.findings-file }}'
+          code='${{ steps.vk.outputs.exit-code }}'
+
+          echo "run-dir=$dir  exit-code=$code"
+          for f in "$sarif" "$findings" "$dir/report.md"; do
+            if [ ! -f "$f" ]; then
+              echo "::error::the action promised $f and it does not exist"
+              exit 1
+            fi
+          done
+
+          # A SARIF file GitHub would reject is worse than none, so check the
+          # properties it rejects on rather than merely that the file parses.
+          python3 - "$sarif" <<'PY'
+          import json, sys
+          d = json.load(open(sys.argv[1], encoding="utf-8"))
+          assert d["version"] == "2.1.0", d["version"]
+          assert d["$schema"].endswith("sarif-2.1.0.json"), d["$schema"]
+          run = d["runs"][0]
+          assert run["tool"]["driver"]["name"], "driver.name is required"
+          assert "rules" in run["tool"]["driver"], "driver.rules is required"
+          for i, res in enumerate(run["results"]):
+              assert res["message"]["text"].strip(), f"results[{i}] has no message"
+              loc = res["locations"][0]["physicalLocation"]
+              uri = loc["artifactLocation"]["uri"]
+              assert uri and not uri.startswith(("/", "file:")), f"results[{i}] uri {uri!r}"
+              assert loc["region"]["startLine"] >= 1, f"results[{i}] startLine"
+              assert loc["region"]["startColumn"] >= 1, f"results[{i}] startColumn"
+              assert res["partialFingerprints"]["primaryLocationLineHash"], f"results[{i}] fingerprint"
+          print(f"SARIF ok: {len(run['results'])} results, {len(run['tool']['driver']['rules'])} rules")
+          PY
+
+          # With no scanners installed, the checks that need them must report
+          # as skipped rather than quietly contributing nothing. That is the
+          # guarantee the whole coverage effort was about, asserted here
+          # against the contract rather than against a report.
+          python3 - "$findings" <<'PY'
+          import json, sys
+          d = json.load(open(sys.argv[1], encoding="utf-8"))
+          skipped = d.get("skipped") or []
+          assert skipped, "nothing was recorded as skipped, though no scanner was installed"
+          ids = {s["check_id"] for s in skipped}
+          for want in ("engine.semgrep", "engine.osv-scanner", "engine.gitleaks"):
+              assert want in ids, f"{want} is absent from the skip list: {sorted(ids)}"
+          print(f"coverage ok: {len(skipped)} checks recorded as not run")
+          PY
