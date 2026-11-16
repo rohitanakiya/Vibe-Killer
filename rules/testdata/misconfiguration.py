@@ -10,14 +10,19 @@ Each rule in the pack is required to appear here by
 TestEveryRuleHasABehaviourFixture, so a new rule cannot ship unexercised.
 """
 
+import os
+import secrets
 import ssl
+import traceback
+from http.server import HTTPServer, SimpleHTTPRequestHandler
 from urllib.parse import urlparse
 
 import httpx
 import requests
 import uvicorn
 from fastapi import APIRouter, FastAPI, HTTPException
-from flask import Flask, request
+from fastapi.staticfiles import StaticFiles
+from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -26,6 +31,11 @@ app = Flask(__name__)
 router = APIRouter()
 
 ALLOWED_FEED_HOSTS = frozenset({"feeds.example.invalid"})
+UPLOAD_ROOT = os.path.join(os.path.dirname(__file__), "uploads")
+
+
+class ApplicationRequestHandler:
+    pass
 
 
 # --- cors-origin-reflected-python -----------------------------------------
@@ -198,3 +208,98 @@ def requests_verified(feed_url):
 def context_left_alone():
     # ok: tls-verification-disabled-python
     return ssl.create_default_context()
+
+
+# --- error-detail-returned-to-caller-python ------------------------------
+#
+# The exception text only counts when it is tied to the exception the handler
+# caught. str(anything) is far too common to match on its own, and a rule that
+# did would fire on every stringified value in a response.
+
+def read_order(order_id):
+    try:
+        return {"id": int(order_id)}
+    except ValueError as exc:
+        # ruleid: error-detail-returned-to-caller-python
+        return jsonify({"error": str(exc)}), 400
+
+
+def read_order_generically(order_id):
+    try:
+        return {"id": int(order_id)}
+    except ValueError:
+        # ok: error-detail-returned-to-caller-python
+        return jsonify({"error": "that id is not a number"}), 400
+
+
+def count_items(items):
+    # Not an exception, and the rule has to stay off it.
+    # ok: error-detail-returned-to-caller-python
+    return jsonify({"error": str(len(items))})
+
+
+@app.errorhandler(Exception)
+def handle_error_verbosely(err):
+    # ruleid: error-detail-returned-to-caller-python
+    return jsonify({"error": str(err)}), 500
+
+
+@app.errorhandler(ValueError)
+def handle_error_quietly(err):
+    correlation_id = secrets.token_hex(8)
+    app.logger.exception("[%s] unhandled error", correlation_id)
+    # ok: error-detail-returned-to-caller-python
+    return jsonify({"error": "internal error", "correlation_id": correlation_id}), 500
+
+
+def read_order_with_traceback(order_id):
+    try:
+        return {"id": int(order_id)}
+    except ValueError:
+        # A traceback in a response has no innocent reading, so this needs no
+        # tie to the caught exception.
+        # ruleid: error-detail-returned-to-caller-python
+        return jsonify({"error": traceback.format_exc()}), 500
+
+
+def read_order_logging_the_traceback(order_id):
+    try:
+        return {"id": int(order_id)}
+    except ValueError:
+        # Logging it server-side is the correct thing to do.
+        # ok: error-detail-returned-to-caller-python
+        app.logger.error("%s", traceback.format_exc())
+        return jsonify({"error": "internal error"}), 500
+
+
+# --- directory-listing-or-whole-tree-served-python -----------------------
+
+def mount_static_at_the_project_root(fastapi_app):
+    # ruleid: directory-listing-or-whole-tree-served-python
+    fastapi_app.mount("/files", StaticFiles(directory="."), name="files")
+
+
+def mount_static_at_a_public_directory(fastapi_app):
+    # ok: directory-listing-or-whole-tree-served-python
+    fastapi_app.mount("/assets", StaticFiles(directory="static"), name="assets")
+
+
+def serve_the_source_tree():
+    # ruleid: directory-listing-or-whole-tree-served-python
+    return send_from_directory(os.path.dirname(__file__), "app.py")
+
+
+def serve_an_upload():
+    # ok: directory-listing-or-whole-tree-served-python
+    return send_from_directory(UPLOAD_ROOT, "banner.png")
+
+
+def serve_a_listing():
+    # The stdlib handler lists whatever directory it is rooted at.
+    # ruleid: directory-listing-or-whole-tree-served-python
+    return HTTPServer(("127.0.0.1", 8000), SimpleHTTPRequestHandler)
+
+
+def serve_an_application():
+    # ok: directory-listing-or-whole-tree-served-python
+    return HTTPServer(("127.0.0.1", 8000), ApplicationRequestHandler)

@@ -39,19 +39,13 @@ All four report here now. rules/testdata pins each of them to a line, and
 rules/coverage_test.go refuses a rule that nothing pins, which is the part
 that keeps this from happening again.
 
-What is still missing is not FastAPI-specific and is not in this file. Counted
-across the pack, eight of its twenty-five contract rule ids have no Python
-spelling at all, in any framework: authz.endpoint-missing-auth,
-authz.client-supplied-role, authz.mass-assignment,
-auth.session-cookie-unprotected, auth.token-without-expiry,
-injection.nosql-operator-injection, misconfig.error-detail-disclosed and
-misconfig.static-exposure are matched only against Express idioms. Two run the
-other way -- misconfig.debug-mode-enabled and misconfig.wildcard-allowed-hosts
-are Python-only.
-
-None of those weaknesses are present in this file, so there is nothing here to
-annotate. The gap is tracked as issue #5 rather than as a comment pretending
-to be one.
+The wider gap this fixture exposed is closed too. Ten of the pack's
+twenty-five contract rule ids used to exist in one language only -- eight
+JavaScript-only, two Python-only -- so a finding did not mean the same thing
+whatever the stack. All twenty-five are now declared for both languages, and
+rules/coverage_test.go asserts it, with the one Dockerfile rule written down
+as an exception. Most of those weaknesses are not present in this file, so
+they are pinned in rules/testdata rather than here.
 """
 
 import hashlib

@@ -105,6 +105,11 @@ func TestRulePackFiresOnVulnerableFixtures(t *testing.T) {
 			fixture: "flask-vulnerable",
 			wantRule: []string{
 				"idor.missing-ownership-check",
+				// `payload = request.json or {}` on one line and
+				// `order.update(payload)` on another, which is why the Python
+				// mass-assignment rule had to be written in taint mode: no
+				// single-expression pattern sees both.
+				"authz.mass-assignment",
 				"injection.sql-string-built-from-input",
 				"injection.command-built-from-input",
 				"traversal.path-built-from-input",
@@ -142,6 +147,10 @@ func TestRulePackFiresOnVulnerableFixtures(t *testing.T) {
 				"crypto.tls-verification-disabled",
 				"idor.missing-ownership-check",
 				"ssrf.user-supplied-url-fetched",
+				// `order.update(payload.model_dump())`, where payload is a
+				// handler parameter. The taint only starts because a
+				// decorated handler's parameters are sources.
+				"authz.mass-assignment",
 			},
 		},
 		{

@@ -414,3 +414,241 @@ rules:
               metavariable: $FIELD
               regex: '^(role|roles|isAdmin|is_admin|admin|permission|permissions|scope|scopes|tenant|tenantId)$'
           - focus-metavariable: $FIELD
+
+  - id: route-without-auth-decorator-python
+    languages: [python]
+    severity: WARNING
+    message: >-
+      This view mutates data but has no authentication decorator or dependency
+      and never inspects an authenticated principal. If this endpoint is not
+      meant to be public, it is currently open to anyone who can reach the
+      server.
+    metadata:
+      category: security
+      cwe:
+        - "CWE-862: Missing Authorization"
+      owasp:
+        - "A01:2021 - Broken Access Control"
+      confidence: LOW
+      vibekiller:
+        rule_id: authz.endpoint-missing-auth
+        category: broken-access-control
+        severity: high
+        confidence: heuristic
+        fixable_by_giver: true
+        root_cause_hint: >-
+          Authorization is applied per view by hand, so a view added later
+          silently has none.
+        guidance: >-
+          Put the authentication decorator on this view, or mount the router
+          behind a dependency that provides the principal, so that a newly
+          added route is protected by default rather than by remembering.
+        dynamic_rule: authz.unprotected-endpoint
+    # Restricted to mutating methods, as the Express rule is, and for the same
+    # reason: a GET with no authentication is very often public by design, and
+    # the endpoint layer's authz.unprotected-endpoint settles that case by
+    # requesting the route without credentials rather than by guessing.
+    #
+    # Two decorator shapes, because Flask and FastAPI disagree about where the
+    # method lives. FastAPI writes it in the decorator name; Flask writes
+    # @app.route(..., methods=[...]), so the method list is constrained as a
+    # metavariable instead -- which filters without narrowing the range, and
+    # the range has to stay the whole view for the exclusions below to mean
+    # anything.
+    patterns:
+      - pattern-either:
+          - patterns:
+              - pattern-either:
+                  - pattern: |
+                      @$APP.$METHOD(...)
+                      def $VIEW(...):
+                          ...
+                  - pattern: |
+                      @$APP.$METHOD(...)
+                      async def $VIEW(...):
+                          ...
+              - metavariable-regex:
+                  metavariable: $METHOD
+                  regex: '^(post|put|patch|delete)$'
+          - patterns:
+              - pattern-either:
+                  - pattern: |
+                      @$APP.route(..., methods=$METHODS, ...)
+                      def $VIEW(...):
+                          ...
+                  - pattern: |
+                      @$APP.route(..., methods=$METHODS, ...)
+                      async def $VIEW(...):
+                          ...
+              # Anchored with .* at both ends, which is not decoration:
+              # metavariable-regex matches from the start of the binding, and
+              # $METHODS binds the list literal `["POST"]`, so a bare
+              # `(POST|...)` alternation never matches. The pack's other
+              # metavariable-regex entries are written the same way.
+              - metavariable-regex:
+                  metavariable: $METHODS
+                  regex: '(?i).*(POST|PUT|PATCH|DELETE).*'
+      # Nothing in the view, or on it, names an authenticated principal. The
+      # list covers Flask's decorators and globals, FastAPI's Depends and
+      # Security, Django REST's permission classes, and an endpoint that
+      # authenticates by comparing an API key -- which is authentication even
+      # though it names no user.
+      - pattern-not-regex: >-
+          (?s)(current_user|request\.user|g\.user|session\[|Depends\(|Security\(|login_required|require_auth|requires_auth|get_current_user|verify_token|check_auth|authenticated|permission_classes|IsAuthenticated|api_?key)
+      # A route that is public by design is a decision, not an oversight.
+      - pattern-not-regex: >-
+          (?i)(?s)(public|unauthenticated|webhook|health|/login|/signin|/sign-in|/signup|/sign-up|/register|/logout|/reset|/forgot|/verify|/confirm|/csrf|/metrics|/ping|/status)
+
+  - id: authorization-decided-client-side-python
+    languages: [python]
+    severity: WARNING
+    message: >-
+      A role or permission read from a client-supplied payload is being used to
+      make an access decision. Anything the client sends can be changed by the
+      client; the role has to come from the server's own record of the session.
+    metadata:
+      category: security
+      cwe:
+        - "CWE-602: Client-Side Enforcement of Server-Side Security"
+      owasp:
+        - "A01:2021 - Broken Access Control"
+      confidence: MEDIUM
+      vibekiller:
+        rule_id: authz.client-supplied-role
+        category: broken-access-control
+        severity: high
+        confidence: likely
+        fixable_by_giver: true
+        root_cause_hint: >-
+          The authorization decision reads its input from the request rather
+          than from server-side session state.
+        guidance: >-
+          Load the principal's role from the database or the verified session
+          on every request, and ignore any role, permission or tenant field
+          present in the request body, query or headers.
+    # The third alternative is the FastAPI one and it is the reason this is
+    # worth having separately from a regex: a request body arrives as a typed
+    # handler parameter, so `payload.role` reads like ordinary attribute
+    # access on a trusted object. Binding $P to a parameter of a decorated
+    # handler is what makes it client-supplied by construction.
+    #
+    # focus-metavariable keeps the reported range on the field rather than on
+    # the whole condition, which is where a reader needs to look.
+    pattern-either:
+      - patterns:
+          - pattern-inside: |
+              if <... request.$SRC[$FIELD] ...>:
+                  ...
+          - metavariable-regex:
+              metavariable: $SRC
+              regex: '^(json|form|args|values|headers|cookies)$'
+          - metavariable-regex:
+              metavariable: $FIELD
+              regex: >-
+                (?i)^['"](role|roles|is_?admin|admin|permission|permissions|scope|scopes|tenant|tenant_?id)['"]$
+          - focus-metavariable: $FIELD
+      - patterns:
+          - pattern-inside: |
+              if <... request.$SRC.get($FIELD, ...) ...>:
+                  ...
+          - metavariable-regex:
+              metavariable: $SRC
+              regex: '^(json|form|args|values|headers|cookies)$'
+          - metavariable-regex:
+              metavariable: $FIELD
+              regex: >-
+                (?i)^['"](role|roles|is_?admin|admin|permission|permissions|scope|scopes|tenant|tenant_?id)['"]$
+          - focus-metavariable: $FIELD
+      - patterns:
+          - pattern-inside: |
+              @$APP.$METHOD(...)
+              def $VIEW(..., $P: $MODEL, ...):
+                  ...
+          - pattern-inside: |
+              if <... $P.$FIELD ...>:
+                  ...
+          - metavariable-regex:
+              metavariable: $FIELD
+              regex: '^(role|roles|is_admin|admin|permission|permissions|scope|scopes|tenant|tenant_id)$'
+          - focus-metavariable: $FIELD
+
+  - id: mass-assignment-request-body-python
+    languages: [python]
+    severity: ERROR
+    message: >-
+      The whole request body is written into a record. A caller can set any
+      field the model accepts, including ones the UI never exposes, such as
+      role, is_admin, owner_id or balance.
+    metadata:
+      category: security
+      cwe:
+        - "CWE-915: Improperly Controlled Modification of Dynamically-Determined Object Attributes"
+      owasp:
+        - "A01:2021 - Broken Access Control"
+      confidence: HIGH
+      vibekiller:
+        rule_id: authz.mass-assignment
+        category: broken-access-control
+        severity: high
+        confidence: likely
+        fixable_by_giver: true
+        root_cause_hint: >-
+          The write path trusts the shape of the request body instead of
+          selecting the fields it is willing to accept.
+        guidance: >-
+          Pick the permitted fields explicitly before writing, for example
+          order = {"item": payload["item"]}, and never pass the request body
+          or a permissive model's dump straight into an update or create call.
+    # Taint rather than a pattern pair, and that is the whole reason this rule
+    # can exist on Python at all. The body is almost never written in the same
+    # expression it arrives in:
+    #
+    #   payload = request.json or {}        # Flask
+    #   order.update(payload)
+    #
+    #   def create(payload: OrderIn):       # FastAPI
+    #       order.update(payload.model_dump())
+    #
+    # A single-expression pattern sees neither. Tracing the flow sees both,
+    # and the FastAPI shape only works because a decorated handler's
+    # parameters are sources.
+    mode: taint
+    pattern-sources:
+      # Flask and Django deliver request values on a request object.
+      - pattern: 'request.json'
+      - pattern: 'request.form'
+      - pattern: 'request.values'
+      - pattern: 'request.data'
+      - pattern: 'request.get_json(...)'
+      # Starlette, and so FastAPI, names them differently.
+      - pattern: 'request.query_params'
+      # FastAPI's usual shape has no request object at all: the framework
+      # parses the body into the handler's parameters, so the parameter itself
+      # is the untrusted value.
+      - patterns:
+          - pattern-inside: |
+              @$APP.$METHOD(...)
+              def $VIEW(..., $PARAM, ...):
+                  ...
+          - pattern: $PARAM
+      - patterns:
+          - pattern-inside: |
+              @$APP.$METHOD(...)
+              async def $VIEW(..., $PARAM, ...):
+                  ...
+          - pattern: $PARAM
+    pattern-sanitizers:
+      # Naming the fields is the fix, so a dict built key by key is clean even
+      # though its values came from the request.
+      - pattern: '$D[$K]'
+      - pattern: '$D.get($K, ...)'
+      - pattern: '$D.get($K)'
+    pattern-sinks:
+      - pattern-either:
+          # A bulk write of a whole mapping.
+          - pattern: '$REC.update(...)'
+          - pattern: '$MODEL(**...)'
+          - pattern: '$MODEL.objects.create(**...)'
+          - pattern: '$MODEL.objects.filter(...).update(**...)'
+          - pattern: '$OBJ.__dict__.update(...)'
+          - pattern: 'setattr($OBJ, ...)'

@@ -149,3 +149,46 @@ def flask_banner():
     # ok: path-built-from-request-value-python
     with open("/etc/hostname", "rb") as fh:
         return fh.read()
+
+
+# --- nosql-query-built-from-request-object-python -------------------------
+
+
+class _Collection:
+    def find_one(self, *a, **k):
+        raise NotImplementedError("fixture only")
+
+    def update_one(self, *a, **k):
+        raise NotImplementedError("fixture only")
+
+
+users = _Collection()
+
+
+@app.route("/flask/login-lookup", methods=["POST"])
+def flask_login_lookup():
+    # ruleid: nosql-query-built-from-request-object-python
+    return users.find_one(request.json)
+
+
+@app.route("/flask/login-field", methods=["POST"])
+def flask_login_field():
+    # ruleid: nosql-query-built-from-request-object-python
+    return users.find_one({"email": request.json["email"]})
+
+
+@app.route("/flask/login-coerced", methods=["POST"])
+def flask_login_coerced():
+    # Coercing to the expected type is the fix: an object becomes a string
+    # rather than a set of operators.
+    # ok: nosql-query-built-from-request-object-python
+    return users.find_one({"email": str(request.json["email"])})
+
+
+@router.post("/login-typed")
+def fastapi_login_typed(email: str):
+    # FastAPI is not exposed to this in its usual spelling. A parameter
+    # annotated str is coerced by pydantic before the handler runs, so an
+    # object in the body is a 422 rather than a query operator.
+    # ok: nosql-query-built-from-request-object-python
+    return users.find_one({"email": email})

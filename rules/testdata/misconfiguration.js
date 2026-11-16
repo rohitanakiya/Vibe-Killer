@@ -8,6 +8,7 @@ const serveIndex = require('serve-index');
 const path = require('path');
 const https = require('https');
 const cors = require('cors');
+const errorhandler = require('errorhandler');
 
 const app = express();
 
@@ -100,3 +101,64 @@ process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 const strictAgent = new https.Agent({ rejectUnauthorized: true });
 
 module.exports = { app, laxAgent, strictAgent };
+
+
+// --- debug-mode-enabled-javascript ---------------------------------------
+//
+// Not the interactive console that makes the Python form critical: Express
+// returns the full stack trace on an unhandled error when its environment is
+// development, and the errorhandler middleware does so unconditionally.
+
+// ruleid: debug-mode-enabled-javascript
+app.set('env', 'development');
+
+// ok: debug-mode-enabled-javascript
+app.set('env', 'production');
+
+// ruleid: debug-mode-enabled-javascript
+process.env.NODE_ENV = "development";
+
+// ok: debug-mode-enabled-javascript
+process.env.NODE_ENV = "production";
+
+// ruleid: debug-mode-enabled-javascript
+app.use(errorhandler());
+
+// ok: debug-mode-enabled-javascript
+app.use((err, req, res, next) => {
+  res.status(500).json({ error: 'internal error' });
+});
+
+// --- wildcard-allowed-hosts-javascript -----------------------------------
+//
+// Node has no ALLOWED_HOSTS, so the equivalent lives in two places: the proxy
+// trust setting that decides whether X-Forwarded-Host is believed, and the dev
+// server's own host check.
+
+// ruleid: wildcard-allowed-hosts-javascript
+app.set('trust proxy', true);
+
+// Counting the proxies in front of the app is the fix; req.hostname then
+// comes from a hop you control.
+// ok: wildcard-allowed-hosts-javascript
+app.set('trust proxy', 1);
+
+module.exports.devServer = {
+  // ruleid: wildcard-allowed-hosts-javascript
+  allowedHosts: 'all',
+};
+
+module.exports.devServerNamed = {
+  // ok: wildcard-allowed-hosts-javascript
+  allowedHosts: ['app.localhost'],
+};
+
+module.exports.legacyDevServer = {
+  // ruleid: wildcard-allowed-hosts-javascript
+  disableHostCheck: true,
+};
+
+module.exports.legacyDevServerChecked = {
+  // ok: wildcard-allowed-hosts-javascript
+  disableHostCheck: false,
+};

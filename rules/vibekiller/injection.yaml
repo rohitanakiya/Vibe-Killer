@@ -488,3 +488,59 @@ rules:
           - pattern: 'Path(...).read_text(...)'
           - pattern: 'Path(...).read_bytes(...)'
       - pattern-not: 'send_from_directory(...)'
+
+  - id: nosql-query-built-from-request-object-python
+    languages: [python]
+    severity: ERROR
+    message: >-
+      A decoded JSON body is used as a query filter. If the caller sends an
+      object where the code assumes a scalar, for example {"$gt": ""} or
+      {"$ne": null}, the driver treats it as a query operator and the
+      comparison no longer means what the code reads as.
+    metadata:
+      category: security
+      cwe:
+        - "CWE-943: Improper Neutralization of Special Elements in Data Query Logic"
+      owasp:
+        - "A03:2021 - Injection"
+      confidence: MEDIUM
+      vibekiller:
+        rule_id: injection.nosql-operator-injection
+        category: injection
+        severity: high
+        confidence: likely
+        fixable_by_giver: true
+        root_cause_hint: >-
+          A JSON body can hold an object where the code assumes a scalar, and
+          the driver treats that object as operators.
+        guidance: >-
+          Coerce and validate the value to the type you expect before
+          querying, for example str(request.json["email"]), and reject
+          non-scalar input at the edge with a schema.
+        dynamic_rule: injection.nosql-operator-differential
+    # Flask and Django shapes only, and that is the finding rather than a gap.
+    #
+    # FastAPI's usual spelling is not exposed to this: a parameter annotated
+    # `email: str` is coerced by pydantic before the handler runs, so an
+    # object in the body is a 422 rather than a query operator. The exposure
+    # needs raw decoded JSON reaching the driver, which is what every
+    # alternative below requires.
+    #
+    # The operation name is constrained rather than left free, because a bare
+    # `$X.$OP($REQ)` would match any call that forwards a request body
+    # anywhere.
+    patterns:
+      - pattern-either:
+          # The whole body as the filter, which is how an operator object
+          # such as {"$ne": null} gets in.
+          - pattern: '$COLL.$OP(request.json, ...)'
+          - pattern: '$COLL.$OP(request.get_json(...), ...)'
+          # One field taken straight from the body.
+          - pattern: '$COLL.$OP({..., $FIELD: request.json[$K], ...}, ...)'
+          - pattern: '$COLL.$OP({..., $FIELD: request.json.get($K), ...}, ...)'
+          - pattern: '$COLL.$OP({..., $FIELD: request.json.get($K, ...), ...}, ...)'
+          - pattern: '$COLL.$OP({..., $FIELD: request.args[$K], ...}, ...)'
+          - pattern: '$COLL.$OP({..., $FIELD: request.args.get($K), ...}, ...)'
+      - metavariable-regex:
+          metavariable: $OP
+          regex: '^(find|find_one|find_one_and_update|find_one_and_delete|find_one_and_replace|delete_one|delete_many|update_one|update_many|replace_one|count_documents)$'

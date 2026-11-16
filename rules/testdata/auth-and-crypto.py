@@ -166,3 +166,48 @@ def make_reset_token_properly():
     # ok: predictable-randomness-for-security-value
     reset_token = secrets.token_urlsafe(32)
     return reset_token
+
+
+# --- token-expiry-not-set-python -----------------------------------------
+#
+# PyJWT carries the expiry in the claims, so the rule only fires where the
+# claims are visible. A payload assembled into a variable first is out of
+# reach, deliberately: reporting it would flag every correct call that builds
+# its claims before signing.
+
+def sign_without_expiry(user_id):
+    # ruleid: token-expiry-not-set-python
+    return jwt.encode({"sub": user_id}, JWT_SECRET, algorithm="HS256")
+
+
+def sign_with_expiry(user_id):
+    # ok: token-expiry-not-set-python
+    return jwt.encode({"sub": user_id, "exp": 1767225600}, JWT_SECRET, algorithm="HS256")
+
+
+def sign_claims_built_earlier(user_id):
+    claims = {"sub": user_id, "exp": 1767225600}
+    # ok: token-expiry-not-set-python
+    return jwt.encode(claims, JWT_SECRET, algorithm="HS256")
+
+
+# --- session-cookie-missing-protections-python ---------------------------
+#
+# set_cookie defaults httponly to False in Flask, Django and Starlette alike,
+# so omitting the flag is the same as switching it off.
+
+def set_session_cookie(response, value):
+    # ruleid: session-cookie-missing-protections-python
+    response.set_cookie("sid", value, secure=True, samesite="Lax")
+
+
+def set_session_cookie_properly(response, value):
+    # ok: session-cookie-missing-protections-python
+    response.set_cookie("sid", value, httponly=True, secure=True, samesite="Lax")
+
+
+# ruleid: session-cookie-missing-protections-python
+SESSION_COOKIE_HTTPONLY = False
+
+# ok: session-cookie-missing-protections-python
+SESSION_COOKIE_SECURE = True

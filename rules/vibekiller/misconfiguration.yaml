@@ -557,3 +557,207 @@ rules:
     patterns:
       - pattern-regex: '(?s)\A.*?FROM[ \t]+\S+.*\z'
       - pattern-not-regex: '(?mi)^[ \t]*USER[ \t]+(?!root[ \t]*$)\S+'
+
+  - id: error-detail-returned-to-caller-python
+    languages: [python]
+    severity: WARNING
+    message: >-
+      An exception's message or traceback is sent to the caller. That discloses
+      file paths, library versions and often fragments of queries, which is how
+      an attacker learns the shape of the system.
+    metadata:
+      category: security
+      cwe:
+        - "CWE-209: Generation of Error Message Containing Sensitive Information"
+      owasp:
+        - "A05:2021 - Security Misconfiguration"
+      confidence: MEDIUM
+      vibekiller:
+        rule_id: misconfig.error-detail-disclosed
+        category: security-misconfiguration
+        severity: medium
+        confidence: likely
+        fixable_by_giver: true
+        root_cause_hint: >-
+          The handler forwards the exception to the client instead of logging
+          it server-side.
+        guidance: >-
+          Log the error with its traceback on the server and return a generic
+          message with a correlation id to the caller, for example
+          jsonify({"error": "internal error", "correlation_id": cid}).
+        dynamic_rule: misconfig.verbose-error
+    # str(something) is far too common to match on its own, so the exception
+    # text is only a finding when it is tied to the exception the handler
+    # caught -- through `except ... as $EXC`, a Flask errorhandler's parameter,
+    # or a Starlette exception handler's. That tie is what separates this from
+    # a rule that fires on every stringified value in a response.
+    #
+    # Anything built from traceback is matched without the tie, because a
+    # traceback in a response has no innocent reading. Logging it server-side
+    # is correct and is not matched: the pattern requires it to reach a
+    # response object.
+    pattern-either:
+      - pattern: 'jsonify({..., $K: traceback.format_exc(), ...})'
+      - pattern: 'JSONResponse({..., $K: traceback.format_exc(), ...}, ...)'
+      - pattern: 'PlainTextResponse(traceback.format_exc(), ...)'
+      - pattern: 'Response(traceback.format_exc(), ...)'
+      - pattern: 'HTTPException(..., detail=traceback.format_exc(), ...)'
+      - patterns:
+          - pattern-inside: |
+              try:
+                  ...
+              except $E as $EXC:
+                  ...
+          - pattern-either:
+              - pattern: 'jsonify({..., $K: str($EXC), ...})'
+              - pattern: 'jsonify({..., $K: $EXC.args, ...})'
+              - pattern: 'JSONResponse({..., $K: str($EXC), ...}, ...)'
+              - pattern: 'PlainTextResponse(str($EXC), ...)'
+              - pattern: 'HTTPException(..., detail=str($EXC), ...)'
+              - pattern: 'return str($EXC), $CODE'
+      # Flask's error handler takes the exception as its parameter, so there
+      # is no except clause to tie to.
+      - patterns:
+          - pattern-inside: |
+              @$APP.errorhandler(...)
+              def $H($ERR):
+                  ...
+          - pattern-either:
+              - pattern: 'jsonify({..., $K: str($ERR), ...})'
+              - pattern: 'jsonify({..., $K: $ERR.args, ...})'
+              - pattern: 'return str($ERR), $CODE'
+      # And Starlette's takes the request and the exception.
+      - patterns:
+          - pattern-inside: |
+              @$APP.exception_handler(...)
+              def $H($REQ, $ERR):
+                  ...
+          - pattern-either:
+              - pattern: 'JSONResponse({..., $K: str($ERR), ...}, ...)'
+              - pattern: 'PlainTextResponse(str($ERR), ...)'
+
+  - id: directory-listing-or-whole-tree-served-python
+    languages: [python]
+    severity: WARNING
+    message: >-
+      Static file serving is rooted at the project directory, or a directory
+      listing handler is being served. Either exposes source files, config and
+      dotfiles that were never meant to be reachable.
+    metadata:
+      category: security
+      cwe:
+        - "CWE-548: Exposure of Information Through Directory Listing"
+      owasp:
+        - "A05:2021 - Security Misconfiguration"
+      confidence: MEDIUM
+      vibekiller:
+        rule_id: misconfig.static-exposure
+        category: security-misconfiguration
+        severity: medium
+        confidence: likely
+        fixable_by_giver: true
+        root_cause_hint: >-
+          The static root is the repository rather than a dedicated public
+          directory.
+        guidance: >-
+          Serve from a directory that contains only public assets, for example
+          StaticFiles(directory="static"), and do not mount a listing handler
+          in front of application code.
+        dynamic_rule: misconfig.directory-listing
+    pattern-either:
+      - pattern: 'StaticFiles(..., directory=".", ...)'
+      - pattern: 'StaticFiles(..., directory="./", ...)'
+      - pattern: 'StaticFiles(..., directory="..", ...)'
+      - pattern: 'StaticFiles(..., directory=os.path.dirname(__file__), ...)'
+      - pattern: 'StaticFiles(..., directory=str(Path(__file__).parent), ...)'
+      - pattern: 'Flask(..., static_folder=".", ...)'
+      - pattern: '$APP.static_folder = "."'
+      - pattern: 'send_from_directory(".", ...)'
+      - pattern: 'send_from_directory(os.path.dirname(__file__), ...)'
+      # The stdlib handler lists whatever directory it is rooted at, which is
+      # the working directory unless it is told otherwise. Matching it as a
+      # server argument rather than by name keeps the import out of it.
+      - pattern: '$SRV(..., SimpleHTTPRequestHandler, ...)'
+      - pattern: '$SRV(..., http.server.SimpleHTTPRequestHandler, ...)'
+
+  - id: debug-mode-enabled-javascript
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: >-
+      Development error handling is switched on. Express returns the full stack
+      trace on an unhandled error when its environment is development, and the
+      errorhandler middleware does so unconditionally, which discloses file
+      paths and library versions to the caller.
+    metadata:
+      category: security
+      cwe:
+        - "CWE-489: Active Debug Code"
+      owasp:
+        - "A05:2021 - Security Misconfiguration"
+      confidence: MEDIUM
+      vibekiller:
+        rule_id: misconfig.debug-mode-enabled
+        category: security-misconfiguration
+        # Deliberately not critical, which the Python form is. Flask's debug
+        # mode serves an interactive console and that is code execution;
+        # Express's development environment discloses stack traces. Same
+        # weakness, materially different ceiling.
+        severity: high
+        confidence: likely
+        fixable_by_giver: true
+        root_cause_hint: >-
+          A development convenience is set in code rather than driven from the
+          environment, so it survives into a deployment.
+        guidance: >-
+          Leave NODE_ENV to the environment and default to production, and
+          mount the development error handler only when NODE_ENV is
+          development. Return a generic message with a correlation id instead.
+        dynamic_rule: misconfig.debug-endpoint-exposed
+    pattern-either:
+      - pattern: '$APP.set("env", "development")'
+      - pattern: 'process.env.NODE_ENV = "development"'
+      - pattern: 'process.env.NODE_ENV = "dev"'
+      - pattern: '$APP.use(errorhandler(...))'
+      - pattern: '$APP.use(errorHandler(...))'
+
+  - id: wildcard-allowed-hosts-javascript
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: >-
+      Every Host header is accepted, or every proxy is trusted to set one. This
+      allows host-header poisoning, where an attacker's domain ends up in
+      password-reset links and absolute URLs the application generates.
+    metadata:
+      category: security
+      cwe:
+        - "CWE-20: Improper Input Validation"
+      owasp:
+        - "A05:2021 - Security Misconfiguration"
+      confidence: MEDIUM
+      vibekiller:
+        rule_id: misconfig.wildcard-allowed-hosts
+        category: security-misconfiguration
+        severity: medium
+        confidence: likely
+        fixable_by_giver: true
+        root_cause_hint: >-
+          The host allowlist, or the proxy trust setting that feeds it, was
+          widened to make deployment work and never narrowed.
+        guidance: >-
+          Give trust proxy the number of proxies in front of this app, or
+          their addresses, rather than true, and list the hostnames a dev
+          server should answer for instead of allowing all of them.
+    # Node has no ALLOWED_HOSTS setting, so the equivalent is in two places.
+    #
+    # `trust proxy: true` makes Express believe any X-Forwarded-Host, so
+    # req.hostname becomes caller-controlled -- which is exactly the poisoning
+    # this rule reports, reached from the other end.
+    #
+    # The dev-server settings are the literal equivalent: allowedHosts "all"
+    # in webpack-dev-server 4 and Vite, disableHostCheck in version 3.
+    pattern-either:
+      - pattern: '$APP.set("trust proxy", true)'
+      - pattern: 'allowedHosts: "all"'
+      - pattern: 'allowedHosts: [..., "all", ...]'
+      - pattern: 'allowedHosts: [..., ".*", ...]'
+      - pattern: 'disableHostCheck: true'

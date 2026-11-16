@@ -525,7 +525,7 @@ category, which is what allows more than one upload per commit.
 | `runtime.query-missing-owner-filter` | runtime | the SQL that served a legitimate read has no owner predicate |
 | `runtime.auth-check-not-fired` | runtime | the declared middleware never ran, though the request succeeded |
 | `exposure.shared-trust-domain` | exposure | one declared component accepts another's token |
-| `engine.semgrep` | static | 35-rule first-party pack, data-flow where it applies |
+| `engine.semgrep` | static | 45-rule first-party pack, data-flow where it applies |
 | `engine.osv-scanner` | deps | dependency tree against the OSV database |
 | `engine.gitleaks` | secrets | working tree and git history, report-only |
 
@@ -548,6 +548,17 @@ rule cannot ship unexercised. That gate exists because one did:
 `crypto.tls-verification-disabled` declared Python among its languages and
 matched nothing on Python for as long as it existed, silently, with
 `errors: 0`.
+
+The same file asserts a second invariant: **every weakness is covered in both
+languages.** 45 Semgrep rules carry 25 contract `rule_id`s, and each one is
+declared for JavaScript *and* for Python, so a finding means the same thing
+whatever the stack. That was not true until recently -- ten ids existed in one
+language only, which meant a Flask application could not be reported for mass
+assignment and an Express application could not be reported for debug mode,
+with nothing in the output saying which rules had no spelling for the language
+it was looking at. The one exception is `misconfig.container-root-user`, which
+reads a Dockerfile and belongs to neither side; exceptions have to be written
+down in the test with a reason.
 
 ---
 

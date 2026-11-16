@@ -169,3 +169,99 @@ func TestEveryRuleHasABehaviourFixture(t *testing.T) {
 		t.Error("no rule is pinned by a fixture; the coverage gate is not measuring anything")
 	}
 }
+
+// A finding has to mean the same thing whatever the stack it came from, and
+// for a while it did not.
+//
+// The pack grew JavaScript-first, so ten of its contract rule ids existed in
+// one language only: a scan of a Flask application could not report mass
+// assignment, and a scan of an Express application could not report debug
+// mode, with nothing in the output saying which rules had no spelling for the
+// language it was looking at. That is the per-rule version of the gap the
+// skipped-check array closed at the layer level -- a quiet absence rather
+// than a wrong answer, which is the harder kind to notice.
+//
+// So the invariant is asserted rather than described: every rule id the pack
+// declares for one of its two application languages has to be declared for
+// the other, and an exception has to be written down here with its reason.
+var singleLanguageByDesign = map[string]string{
+	"misconfig.container-root-user": "a Dockerfile is neither JavaScript nor Python, " +
+		"so this rule is `generic` and belongs to neither side",
+}
+
+func TestEveryWeaknessIsCoveredInBothLanguages(t *testing.T) {
+	files, err := Parse()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	isJS := func(lang string) bool { return lang == "javascript" || lang == "typescript" }
+
+	type coverage struct {
+		js, py bool
+		rules  []string
+	}
+	byRuleID := map[string]*coverage{}
+
+	for _, f := range files {
+		for _, r := range f.Rules {
+			vk := r.Metadata.VibeKiller
+			if vk == nil || vk.RuleID == "" {
+				continue // TestVibeKillerMetadataMatchesTheContract owns this
+			}
+			c := byRuleID[vk.RuleID]
+			if c == nil {
+				c = &coverage{}
+				byRuleID[vk.RuleID] = c
+			}
+			c.rules = append(c.rules, r.ID)
+			for _, lang := range r.Languages {
+				switch {
+				case isJS(lang):
+					c.js = true
+				case lang == "python":
+					c.py = true
+				}
+			}
+		}
+	}
+
+	ids := make([]string, 0, len(byRuleID))
+	for id := range byRuleID {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+
+	both, excepted := 0, 0
+	for _, id := range ids {
+		c := byRuleID[id]
+		if why, ok := singleLanguageByDesign[id]; ok {
+			excepted++
+			if c.js && c.py {
+				t.Errorf("%s is listed in singleLanguageByDesign (%s) but now covers both "+
+					"languages; remove the exception", id, why)
+			}
+			continue
+		}
+		switch {
+		case c.js && c.py:
+			both++
+		case c.js:
+			t.Errorf("%s has no Python rule, only %v. A finding should mean the same thing "+
+				"whatever the stack; write the Python spelling or add the id to "+
+				"singleLanguageByDesign with a reason", id, c.rules)
+		case c.py:
+			t.Errorf("%s has no JavaScript rule, only %v. A finding should mean the same thing "+
+				"whatever the stack; write the JavaScript spelling or add the id to "+
+				"singleLanguageByDesign with a reason", id, c.rules)
+		default:
+			t.Errorf("%s covers neither JavaScript nor Python (%v); if that is deliberate, "+
+				"add it to singleLanguageByDesign with a reason", id, c.rules)
+		}
+	}
+
+	t.Logf("%d rule ids cover both languages, %d excepted by design", both, excepted)
+	if both == 0 {
+		t.Error("no rule id covers both languages; the invariant is not measuring anything")
+	}
+}
