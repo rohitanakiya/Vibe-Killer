@@ -525,7 +525,7 @@ category, which is what allows more than one upload per commit.
 | `runtime.query-missing-owner-filter` | runtime | the SQL that served a legitimate read has no owner predicate |
 | `runtime.auth-check-not-fired` | runtime | the declared middleware never ran, though the request succeeded |
 | `exposure.shared-trust-domain` | exposure | one declared component accepts another's token |
-| `engine.semgrep` | static | 32-rule first-party pack, data-flow where it applies |
+| `engine.semgrep` | static | 35-rule first-party pack, data-flow where it applies |
 | `engine.osv-scanner` | deps | dependency tree against the OSV database |
 | `engine.gitleaks` | secrets | working tree and git history, report-only |
 
@@ -534,10 +534,20 @@ is worth reading before concluding that a quiet scan means a clean one.
 
 The first-party rule pack (`rules/vibekiller/`) covers missing ownership
 checks, mass assignment, client-supplied roles, SQL/NoSQL/command/code
-injection, path traversal, SSRF, unverified JWTs, weak signing secrets, fast
+injection, path traversal, SSRF, unverified JWTs, tokens accepted with no
+signature, weak signing secrets, tokens signed without an expiry, fast
 password digests, predictable tokens, non-constant-time comparison, permissive
-CORS, debug mode, disclosed errors, static exposure, disabled TLS verification
-and containers running as root.
+CORS, debug mode, wildcard allowed hosts, disclosed errors, static exposure,
+disabled TLS verification and containers running as root.
+
+Every rule is pinned to a line in `rules/testdata/`, in Semgrep's own
+`ruleid:` / `ok:` form, and both directions are asserted: the rule has to
+match the code it claims to report and stay quiet on the corrected version
+beside it. `rules/coverage_test.go` refuses a rule that has no such pair, so a
+rule cannot ship unexercised. That gate exists because one did:
+`crypto.tls-verification-disabled` declared Python among its languages and
+matched nothing on Python for as long as it existed, silently, with
+`errors: 0`.
 
 ---
 
@@ -561,17 +571,27 @@ claimed FastAPI support, resolving `APIRouter(prefix=...)` through
 every endpoint check requests a 404 and reports nothing, which is
 indistinguishable from an application with no problems.
 
-Writing it also measured how much of the rule pack travels. Six rules fire on
-the FastAPI fixture and the pack is silent on its patched twin, but the
-`fastapi-vulnerable` expectation list is deliberately shorter than Flask's:
-several rules are shaped around Flask and Django request idioms and cannot
-match FastAPI at all. The taint rules take their sources from `request.args`,
-`request.form` and `request.json`, which FastAPI does not have, and
-`idor-missing-ownership-check` is keyed on `@$APP.route(...)`, which
-`@router.get(...)` does not match -- so the pack's flagship access-control
-rule is silent on FastAPI even though the endpoint check still proves the
-weakness over HTTP. The fixture records that rather than hiding it; the
-`FRAMEWORK-GAP` comments in it say which weakness is unreported and why.
+Writing it also measured how much of the rule pack travels, and the answer was
+less than the README claimed. Six rules fired on the FastAPI fixture where ten
+do now, and the four that were missing were missing for reasons that had
+nothing to do with FastAPI being unusual:
+
+- `idor.missing-ownership-check`, the rule the project leads with, was anchored
+  on `@$APP.route(...)`. FastAPI writes `@router.get(...)`, so the flagship
+  access-control rule could not fire on a FastAPI application at all.
+- The taint rules took their sources from `request.args`, `request.form` and
+  `request.json`. FastAPI parses the query string, path and body into the
+  handler's parameters instead, so the taint never started and a real SSRF
+  reported nothing.
+- `auth.jwt-unsigned-algorithm-accepted` matched `"none"` only as the first
+  entry in the algorithms list. In practice `"none"` is appended beside the
+  real algorithm rather than replacing it, so the rule saw the harmless
+  spelling and missed the dangerous one.
+- `crypto.tls-verification-disabled` matched nothing on Python.
+
+Keeping those weaknesses in the fixture rather than trimming them to fit is
+what made the gap measurable. All four report now, each pinned to a line in
+`rules/testdata/`.
 
 The endpoint checks are tested against in-process servers, so they are
 hermetic — no `npm install`, no ports. The rule-pack behaviour test drives real

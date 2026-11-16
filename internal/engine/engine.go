@@ -268,7 +268,7 @@ func Scan(ctx context.Context, opts ScanOptions) (*Result, error) {
 	// directory set to the repository root. A relative --config therefore
 	// resolved against the wrong directory whenever the repository was not
 	// also the working directory, semgrep exited 7 (MISSING_CONFIG) with
-	// nothing on stderr, and the entire 32-rule static engine silently did
+	// nothing on stderr, and the entire first-party static engine silently did
 	// not run. `scan --repo .` hid it, because there the two directories
 	// coincide.
 	if rulesDir != "" {

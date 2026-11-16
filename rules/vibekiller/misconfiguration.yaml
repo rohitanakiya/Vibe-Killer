@@ -37,15 +37,31 @@ rules:
           credentials enabled only for those origins. Reflecting the request's
           Origin header is equivalent to allowing every site.
         dynamic_rule: misconfig.cors-reflection
+    # The first alternative is structural, and it has to be.
+    #
+    # It used to be `pattern: cors({ ... })` filtered by two positive
+    # `pattern-regex` entries, one for credentials and one for origin. That
+    # cannot match anything. A positive `pattern-regex` inside `patterns`
+    # narrows the reported range to the regex's own span, so the two regexes
+    # were asking one range to be both `credentials: true` (columns 30-47 of
+    # the line) and `origin: true` (columns 16-28) at the same time. Measured:
+    # either regex alone matched, both together matched nothing.
+    #
+    # So the pack's flagship CORS alternative was dead, and the rule still
+    # looked alive because the header-reflection regex below kept firing. The
+    # object pattern below is order-insensitive and reads better anyway.
     pattern-either:
       - patterns:
-          - pattern: 'cors({ ... })'
-          - pattern-regex: '(?s)credentials\s*:\s*true'
-          - pattern-regex: '(?s)origin\s*:\s*(true|[''"]\*[''"]|function|\(.*\)\s*=>)'
+          - pattern: 'cors({..., credentials: true, ...})'
+          - pattern-either:
+              - pattern: 'cors({..., origin: true, ...})'
+              - pattern: 'cors({..., origin: "*", ...})'
+              - pattern: 'cors({..., origin: (...) => ..., ...})'
+              - pattern: 'cors({..., origin: function (...) { ... }, ...})'
       # Setting the header from the request's own Origin is reflection
       # however it is written, so it is matched on its own. Pairing it with a
-      # second regex for the credentials header cannot work: the two are set
-      # on separate lines and both regexes would have to match one range.
+      # second regex for the credentials header cannot work either, for the
+      # same reason, and the two are on separate lines besides.
       - pattern-regex: >-
           (?i)access-control-allow-origin['"]?\s*,\s*(['"]\*['"]|req\.headers\.origin|request\.headers)
 
@@ -80,12 +96,16 @@ rules:
     # than requiring the credentials header to appear in the same expression.
     # Two regexes in one `patterns` block must match the same range, and these
     # two headers are always set on separate lines.
+    # The flask-cors spelling and the Starlette one. FastAPI has no CORS()
+    # helper: the same policy is a middleware, and the rule said nothing about
+    # a FastAPI application configured exactly this wrongly.
     pattern-either:
       - pattern: 'CORS($APP, ..., origins="*", ..., supports_credentials=True, ...)'
       - pattern: 'CORS($APP, ..., supports_credentials=True, ...)'
+      - pattern: '$APP.add_middleware(CORSMiddleware, ..., allow_origins=[..., "*", ...], ..., allow_credentials=True, ...)'
+      - pattern: 'CORSMiddleware(..., allow_origins=[..., "*", ...], ..., allow_credentials=True, ...)'
       - pattern-regex: >-
           (?i)access-control-allow-origin['"]?\s*\]?\s*=\s*request\.headers
-
   - id: debug-mode-enabled
     languages: [python]
     severity: ERROR
@@ -114,13 +134,17 @@ rules:
           debug=os.environ.get("FLASK_DEBUG") == "1". The interactive debugger
           must never be reachable on a deployed instance.
         dynamic_rule: misconfig.debug-endpoint-exposed
+    # The last two are FastAPI's and uvicorn's spellings. The Flask forms
+    # above cannot see either, so a FastAPI application shipped with the
+    # reloader on got no finding.
     pattern-either:
       - pattern: '$APP.run(..., debug=True, ...)'
       - pattern: '$APP.debug = True'
       - pattern: 'DEBUG = True'
       - pattern: '$APP.config["DEBUG"] = True'
       - pattern: '$APP.config.update(..., DEBUG=True, ...)'
-
+      - pattern: 'FastAPI(..., debug=True, ...)'
+      - pattern: 'uvicorn.run(..., reload=True, ...)'
   - id: wildcard-allowed-hosts
     languages: [python]
     severity: WARNING
@@ -146,9 +170,18 @@ rules:
           narrowed.
         guidance: >-
           List the hostnames this instance actually serves in ALLOWED_HOSTS.
+    # Matching the whole list rather than the single-element literal. The
+    # dangerous entry is almost never alone: a wildcard gets added beside the
+    # real hostnames to stop a request being rejected, and
+    # `ALLOWED_HOSTS = ["*"]` as an exact pattern cannot see that.
+    #
+    # The Starlette form is here too, because FastAPI has no ALLOWED_HOSTS
+    # setting and expresses the same thing as middleware.
     pattern-either:
+      - pattern: 'ALLOWED_HOSTS = [..., "*", ...]'
       - pattern: 'ALLOWED_HOSTS = ["*"]'
-      - pattern: 'ALLOWED_HOSTS = [''*'']'
+      - pattern: 'TrustedHostMiddleware(..., allowed_hosts=[..., "*", ...], ...)'
+      - pattern: '$APP.add_middleware(..., allowed_hosts=[..., "*", ...], ...)'
 
   - id: error-detail-returned-to-caller
     languages: [javascript, typescript]
@@ -288,12 +321,32 @@ rules:
     # rather than the rule hoping both appear on one line.
     mode: taint
     pattern-sources:
+      # Flask and Django deliver request values on a request object.
       - pattern: 'request.args'
       - pattern: 'request.form'
       - pattern: 'request.json'
       - pattern: 'request.values'
       - pattern: 'request.data'
       - pattern: 'request.get_json(...)'
+      # Starlette, and so FastAPI, names them differently.
+      - pattern: 'request.query_params'
+      - pattern: 'request.path_params'
+      # FastAPI's usual shape has no request object at all: the framework
+      # parses the query string, path and body into the handler's parameters,
+      # so the parameter itself is the untrusted value. Without this the taint
+      # never starts, and a real SSRF in a FastAPI handler reports nothing.
+      - patterns:
+          - pattern-inside: |
+              @$APP.$METHOD(...)
+              def $VIEW(..., $PARAM, ...):
+                  ...
+          - pattern: $PARAM
+      - patterns:
+          - pattern-inside: |
+              @$APP.$METHOD(...)
+              async def $VIEW(..., $PARAM, ...):
+                  ...
+          - pattern: $PARAM
     pattern-sanitizers:
       - pattern: 'is_allowed_url(...)'
       - pattern: 'validate_url(...)'
@@ -359,8 +412,13 @@ rules:
           Serve from a directory that contains only public assets, and leave
           directory indexing off.
         dynamic_rule: misconfig.directory-listing
+    # `express.static($DIR, { index: false })` used to be the first
+    # alternative here and it was a false positive on correct code. `index`
+    # controls whether index.html is served; setting it to false disables
+    # that. express.static has no directory listing of its own to enable, so
+    # the option cannot produce the exposure this rule reports. Listing comes
+    # from serve-index, which is matched on its own below.
     pattern-either:
-      - pattern: 'express.static($DIR, { ..., index: false, ... })'
       - pattern: 'serveIndex(...)'
       - pattern: 'express.static(__dirname)'
       - pattern: 'express.static(".")'
@@ -368,7 +426,7 @@ rules:
       - pattern: 'express.static("..")'
 
   - id: tls-verification-disabled
-    languages: [javascript, typescript, python]
+    languages: [javascript, typescript]
     severity: ERROR
     message: >-
       Certificate verification is switched off for outbound requests. The
@@ -394,12 +452,61 @@ rules:
           Leave verification on and trust the specific CA you need instead, by
           pointing the client at the CA bundle. Disabling verification removes
           the only check that the peer is who it claims to be.
+    # One rule per language, which is not tidiness.
+    #
+    # Packaged as a single rule declaring [javascript, typescript, python],
+    # `requests.$F(..., verify=False, ...)` matched nothing, silently, with
+    # `errors: 0`. The identical pattern in a rule declaring [python] alone
+    # matches it. Measured rather than assumed: a Python file calling
+    # `requests.get(url, verify=False)` got 0 findings from the packaged rule
+    # and 1 from the split one, so the pattern was right and the packaging was
+    # wrong. Declaration order makes no difference; putting python first
+    # changes nothing. The JavaScript alternatives were unaffected throughout,
+    # which is what made it hard to notice -- the rule looked alive.
+    #
+    # Nothing in the pack asserted that this rule fires anywhere, so it
+    # shipped dead on one of its three declared languages. rules/testdata now
+    # pins every one of these patterns to a line.
     pattern-either:
       - pattern: 'rejectUnauthorized: false'
       - pattern: 'process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0"'
+
+  - id: tls-verification-disabled-python
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Certificate verification is switched off for outbound requests. The
+      connection is still encrypted but no longer authenticated, so anything
+      on the path can read and change it.
+    metadata:
+      category: security
+      cwe:
+        - "CWE-295: Improper Certificate Validation"
+      owasp:
+        - "A02:2021 - Cryptographic Failures"
+      confidence: HIGH
+      vibekiller:
+        rule_id: crypto.tls-verification-disabled
+        category: cryptographic-failure
+        severity: high
+        confidence: likely
+        fixable_by_giver: true
+        root_cause_hint: >-
+          Verification was disabled to get past a certificate error, usually
+          against a development or self-signed endpoint.
+        guidance: >-
+          Leave verification on and trust the specific CA you need instead, by
+          pointing the client at the CA bundle. Disabling verification removes
+          the only check that the peer is who it claims to be.
+    # `ssl.$CTX.verify_mode` was a second, independent fault in this rule, and
+    # that one was dead in every language: it requires the context object to be
+    # an attribute of the ssl module, as in `ssl.foo.verify_mode`, which nobody
+    # writes. A context is a local, so the receiver has to be free.
+    pattern-either:
       - pattern: 'requests.$F(..., verify=False, ...)'
+      - pattern: 'httpx.$F(..., verify=False, ...)'
       - pattern: 'ssl._create_unverified_context()'
-      - pattern: 'ssl.$CTX.verify_mode = ssl.CERT_NONE'
+      - pattern: '$CTX.verify_mode = ssl.CERT_NONE'
 
   - id: container-runs-as-root
     languages: [generic]
@@ -431,6 +538,18 @@ rules:
         guidance: >-
           Create an unprivileged user in the image and add a USER instruction
           before CMD or ENTRYPOINT.
+    # The positive pattern deliberately spans the whole file, and that span
+    # is the entire rule.
+    #
+    # `pattern-not-regex` inside `patterns` is evaluated against the matched
+    # range, not against the file. With a one-line FROM regex as the positive
+    # pattern the range was that one line, the USER exclusion had nothing to
+    # look at, and the rule fired on every Dockerfile it saw -- including one
+    # that correctly drops privileges. It was a guaranteed false positive on
+    # exactly the images that had done the right thing.
+    #
+    # Anchoring the match to the file makes the exclusion mean what it says.
+    # An explicit `USER root` still reports, because that is the finding.
     patterns:
-      - pattern-regex: '(?m)^\s*FROM\s+\S+'
-      - pattern-not-regex: '(?mi)^\s*USER\s+(?!root\s*$)\S+'
+      - pattern-regex: '(?s)\A.*?FROM[ \t]+\S+.*\z'
+      - pattern-not-regex: '(?mi)^[ \t]*USER[ \t]+(?!root[ \t]*$)\S+'

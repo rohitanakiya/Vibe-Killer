@@ -12,15 +12,41 @@ nothing proved it, so "implemented" and "working" were the same word for it.
 The routes below are deliberately declared with a prefixed APIRouter mounted
 through include_router, which is the extraction path under test.
 
-Writing it also showed what does not carry across. Several rules in the pack
-are shaped around Flask and Django request idioms and cannot fire here: the
-taint rules take their sources from request.args, request.form and
-request.json, which FastAPI has none of, and idor-missing-ownership-check is
-keyed on @$APP.route(...), which @router.get(...) does not match. The
-weaknesses are present in this file anyway -- see the FRAMEWORK-GAP notes --
-because the endpoint checks exercise them over HTTP even where the static pack
-stays quiet, and because a fixture that quietly dropped them would hide the
-gap instead of recording it.
+Writing it also showed what did not carry across, and keeping the weaknesses
+here rather than trimming them is what let that be measured instead of
+assumed. Four rules were silent on this file when it was written, for reasons
+that had nothing to do with the fixture:
+
+  idor-missing-ownership-check-python was anchored on @$APP.route(...), which
+  @router.get(...) does not match, so the pack's flagship access-control rule
+  could not fire on FastAPI at all.
+
+  The taint rules took their sources from request.args, request.form and
+  request.json, and FastAPI has none of those: it parses the query string,
+  path and body into the handler's parameters, so the taint never started.
+
+  jwt-accepts-unsigned-algorithm only matched "none" as the first entry in the
+  algorithms list, and the list here is ["HS256", "none"] -- which is the
+  shape it takes in practice, since "none" gets appended rather than
+  substituted.
+
+  tls-verification-disabled matched nothing on Python whatsoever. This
+  docstring used to claim that one did fire; it did not, and no test
+  contradicted the claim because nothing asserted that any rule fires
+  anywhere.
+
+All four report here now. rules/testdata pins each of them to a line, and
+rules/coverage_test.go refuses a rule that nothing pins, which is the part
+that keeps this from happening again.
+
+What is still missing is not FastAPI-specific and is not in this file: five
+rules in the pack have no Python counterpart at all, in any framework --
+authz.endpoint-missing-auth, authz.client-supplied-role,
+misconfig.error-detail-disclosed, misconfig.static-exposure and
+auth.session-cookie-unprotected are matched only against Express idioms. The
+weaknesses they describe are not present here, so there is nothing to annotate;
+the gap is recorded as an issue on the repository instead of as a comment
+pretending to be one.
 """
 
 import hashlib
@@ -91,10 +117,10 @@ def health():
 # VULN (idor.sequential-id-access): authenticated, then looks the order up by
 # the id in the path with no ownership check.
 #
-# FRAMEWORK-GAP: idor-missing-ownership-check-python cannot match this. Its
-# patterns are anchored on @$APP.route(...), and this decorator is
-# @router.get(...). The weakness is real and the endpoint check proves it over
-# HTTP; the static pack is silent on it for FastAPI.
+# This is the route that recorded the gap, and now records the fix: the rule's
+# patterns were anchored on @$APP.route(...) and this decorator is
+# @router.get(...), so it could not match. The decorator is matched generically
+# now and the finding is reported statically as well as over HTTP.
 @router.get("/orders/{order_id}")
 def get_order(order_id: int, authorization: str = Header(default="")):
     require_auth(authorization)
@@ -148,11 +174,15 @@ def read_file(name: str, authorization: str = Header(default="")):
 # the server fetches a caller-supplied URL, and does it without verifying the
 # certificate.
 #
-# FRAMEWORK-GAP: unsafe-fetch-of-user-supplied-url-python is a taint rule whose
-# sources are request.args, request.form and request.json. FastAPI delivers the
-# value as a function parameter, so the source never matches and the SSRF goes
-# unreported by the static pack. tls-verification-disabled does fire, because
-# it matches the requests call itself rather than the value's origin.
+# Two findings on one line, and neither of them used to report.
+#
+# unsafe-fetch-of-user-supplied-url-python is a taint rule, and its sources
+# were a Flask request object that FastAPI does not have: the url arrives as a
+# handler parameter, so the taint never started. The rule now takes a route
+# handler's parameters as sources, which is the shape FastAPI actually uses.
+#
+# tls-verification-disabled was the other one. It declared python among its
+# languages and matched nothing on Python, silently, with errors: 0.
 @router.post("/import")
 def import_feed(url: str, authorization: str = Header(default="")):
     require_auth(authorization)

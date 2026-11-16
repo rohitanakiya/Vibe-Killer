@@ -232,6 +232,7 @@ rules:
     # the finding should report anyway.
     mode: taint
     pattern-sources:
+      # Flask and Django deliver request values on a request object.
       - pattern: 'request.args'
       - pattern: 'request.form'
       - pattern: 'request.json'
@@ -240,6 +241,25 @@ rules:
       - pattern: 'request.headers'
       - pattern: 'request.cookies'
       - pattern: 'request.get_json(...)'
+      # Starlette, and so FastAPI, names them differently.
+      - pattern: 'request.query_params'
+      - pattern: 'request.path_params'
+      # FastAPI's usual shape has no request object at all: the framework
+      # parses the query string, path and body into the handler's parameters,
+      # so the parameter itself is the untrusted value. Without this the taint
+      # never starts and a real injection in a FastAPI handler reports nothing.
+      - patterns:
+          - pattern-inside: |
+              @$APP.$METHOD(...)
+              def $VIEW(..., $PARAM, ...):
+                  ...
+          - pattern: $PARAM
+      - patterns:
+          - pattern-inside: |
+              @$APP.$METHOD(...)
+              async def $VIEW(..., $PARAM, ...):
+                  ...
+          - pattern: $PARAM
     pattern-sanitizers:
       - pattern: 'shlex.quote(...)'
       - pattern: 'int(...)'
@@ -254,7 +274,54 @@ rules:
           - pattern: 'os.popen(...)'
 
   - id: eval-of-request-data
-    languages: [javascript, typescript, python]
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      Request data reaches a dynamic evaluation sink. This gives the caller
+      code execution inside the application process, which is the broadest
+      possible outcome of an injection.
+    metadata:
+      category: security
+      cwe:
+        - "CWE-94: Improper Control of Generation of Code"
+      owasp:
+        - "A03:2021 - Injection"
+      confidence: HIGH
+      vibekiller:
+        rule_id: injection.code-evaluation-of-input
+        category: injection
+        severity: critical
+        confidence: likely
+        fixable_by_giver: true
+        root_cause_hint: >-
+          Input is being interpreted as code, usually as a shortcut for
+          parsing or for a small expression language.
+        guidance: >-
+          Parse the value instead of evaluating it: JSON.parse or json.loads
+          for data, and an explicit parser or lookup table for an expression.
+          No amount of filtering makes evaluation of untrusted input safe.
+    # One rule per language, for the reason the TLS rule in
+    # misconfiguration.yaml records at length. Semgrep parses every pattern
+    # against every language the rule declares, so a Python decorator in a
+    # rule that also declares JavaScript is a hard error -- and, worse, a
+    # pattern that happens to be valid in both but means different things is
+    # accepted and then silently matches nothing on the language it was not
+    # written for.
+    mode: taint
+    pattern-sources:
+      - pattern: '$REQ.params'
+      - pattern: '$REQ.query'
+      - pattern: '$REQ.body'
+    pattern-sinks:
+      - pattern-either:
+          - pattern: 'eval(...)'
+          - pattern: 'new Function(...)'
+          - pattern: 'setTimeout($CODE, ...)'
+          - pattern: 'vm.runInThisContext(...)'
+          - pattern: 'vm.runInNewContext(...)'
+
+  - id: eval-of-request-data-python
+    languages: [python]
     severity: ERROR
     message: >-
       Request data reaches a dynamic evaluation sink. This gives the caller
@@ -282,23 +349,38 @@ rules:
           No amount of filtering makes evaluation of untrusted input safe.
     mode: taint
     pattern-sources:
-      - pattern: '$REQ.params'
-      - pattern: '$REQ.query'
-      - pattern: '$REQ.body'
+      # Flask and Django deliver request values on a request object.
       - pattern: 'request.args'
       - pattern: 'request.form'
       - pattern: 'request.json'
+      - pattern: 'request.values'
+      - pattern: 'request.data'
+      - pattern: 'request.get_json(...)'
+      # Starlette, and so FastAPI, names them differently.
+      - pattern: 'request.query_params'
+      - pattern: 'request.path_params'
+      # FastAPI's usual shape has no request object at all: the framework
+      # parses the query string, path and body into the handler's parameters,
+      # so the parameter itself is the untrusted value. Without this the taint
+      # never starts and a real injection in a FastAPI handler reports nothing.
+      - patterns:
+          - pattern-inside: |
+              @$APP.$METHOD(...)
+              def $VIEW(..., $PARAM, ...):
+                  ...
+          - pattern: $PARAM
+      - patterns:
+          - pattern-inside: |
+              @$APP.$METHOD(...)
+              async def $VIEW(..., $PARAM, ...):
+                  ...
+          - pattern: $PARAM
     pattern-sinks:
       - pattern-either:
           - pattern: 'eval(...)'
           - pattern: 'exec(...)'
-          - pattern: 'new Function(...)'
-          - pattern: 'setTimeout($CODE, ...)'
-          - pattern: 'vm.runInThisContext(...)'
-          - pattern: 'vm.runInNewContext(...)'
           - pattern: 'pickle.loads(...)'
           - pattern: 'yaml.load(...)'
-
   - id: path-built-from-request-value
     languages: [javascript, typescript]
     severity: ERROR

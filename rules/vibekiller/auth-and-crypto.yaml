@@ -105,9 +105,24 @@ rules:
           algorithms: ["RS256"], and never include "none". Accepting a list
           that mixes symmetric and asymmetric algorithms is also unsafe,
           because the public key can then be used as an HMAC secret.
-    pattern-regex: >-
-      (?i)algorithms?\s*[:=]\s*[\[\(]?\s*['"]?none['"]?
-
+    # "none" is hardly ever the only algorithm in the list, and the old regex
+    # required it to be the first thing after the opening bracket:
+    #
+    #   algorithms?\s*[:=]\s*[\[\(]?\s*['"]?none['"]?
+    #
+    # So `algorithms=["none"]` reported and `algorithms=["HS256", "none"]` did
+    # not -- and the second is the one that happens, because "none" gets
+    # appended beside the real algorithm to make a token parse rather than
+    # replacing it. The dangerous case was the one the rule could not see.
+    #
+    # The list form now allows anything up to the closing bracket before
+    # "none". The quotes are no longer optional and "none" has to end on a
+    # word boundary, so `algorithm: 'nonexistent'` is not a hit.
+    pattern-either:
+      - pattern-regex: >-
+          (?i)algorithms?\s*[:=]\s*[\[\(][^\]\)]*['"]none\b['"]
+      - pattern-regex: >-
+          (?i)algorithms?\s*[:=]\s*['"]none\b['"]
   - id: jwt-signed-with-hardcoded-or-weak-secret
     languages: [javascript, typescript, python]
     severity: ERROR
@@ -174,11 +189,27 @@ rules:
         guidance: >-
           Set a short expiry on access tokens, for example expiresIn "15m",
           and use a separate refresh token that you can revoke server-side.
+    # The two-argument call is not the only way to sign without an expiry, and
+    # it used to be the only one this rule could see: `jwt.sign($P, $K)` binds
+    # exactly two arguments, so `jwt.sign(payload, key, { algorithm: 'HS256' })`
+    # -- a signed token with options but no expiry -- went unreported.
+    #
+    # Widening the positive pattern to allow an options object is also what
+    # makes the exclusions live. Against a two-argument match, `pattern-not`
+    # for a three-argument call can never apply, and the old
+    # `pattern-not-regex: (exp|expiresIn|expires_in)\s*:` was dead for a
+    # second reason: `pattern-not-regex` is evaluated against the matched
+    # range, and a two-argument call contains no options to find. Both clauses
+    # looked like safeguards and neither did anything.
     patterns:
-      - pattern: 'jwt.sign($PAYLOAD, $KEY)'
-      - pattern-not: 'jwt.sign($PAYLOAD, $KEY, { ..., expiresIn: ..., ... })'
-      - pattern-not-regex: '(?s)(exp|expiresIn|expires_in)\s*:'
-
+      - pattern-either:
+          - pattern: 'jwt.sign($PAYLOAD, $KEY)'
+          - pattern: 'jwt.sign($PAYLOAD, $KEY, {...})'
+      - pattern-not: 'jwt.sign($PAYLOAD, $KEY, {..., expiresIn: ..., ...})'
+      - pattern-not: 'jwt.sign($PAYLOAD, $KEY, {..., notAfter: ..., ...})'
+      # An expiry set in the payload itself counts, and is how the jose and
+      # python-jwt families do it.
+      - pattern-not: 'jwt.sign({..., exp: ...}, ...)'
   - id: password-hashed-with-fast-digest
     languages: [javascript, typescript, python]
     severity: ERROR
@@ -206,16 +237,30 @@ rules:
           Use a password hashing function with a work factor, such as argon2id,
           scrypt or bcrypt, through a library that salts each password. Migrate
           existing hashes by re-hashing on next successful login.
+    # The JavaScript alternatives have to reach `.update(...)`, and that is
+    # what makes the rule work at all on JavaScript.
+    #
+    # `pattern-regex` inside `patterns` is evaluated against the matched
+    # range. `crypto.createHash("sha256")` spans the algorithm argument and
+    # nothing else, so the credential-name regex had no password to find and
+    # the JavaScript half of this rule matched nothing -- measured on a file
+    # calling `crypto.createHash('sha256').update(password)`, which reported
+    # 0. The Python alternatives were unaffected, because `hashlib.sha256(...)`
+    # takes the value itself, which is why the rule looked alive.
+    #
+    # A digest built across two statements is still out of reach for a
+    # range-based filter. That is a known limit rather than a silent one:
+    # rules/testdata pins the chained form, which is what generated code
+    # writes.
     patterns:
       - pattern-either:
-          - pattern: 'crypto.createHash("md5")'
-          - pattern: 'crypto.createHash("sha1")'
-          - pattern: 'crypto.createHash("sha256")'
+          - pattern: 'crypto.createHash("md5").update(...)'
+          - pattern: 'crypto.createHash("sha1").update(...)'
+          - pattern: 'crypto.createHash("sha256").update(...)'
           - pattern: 'hashlib.md5(...)'
           - pattern: 'hashlib.sha1(...)'
           - pattern: 'hashlib.sha256(...)'
       - pattern-regex: '(?i)(password|passwd|pwd|secret|credential)'
-
   - id: secret-compared-with-equality
     languages: [javascript, typescript, python]
     severity: WARNING

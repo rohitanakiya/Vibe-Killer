@@ -137,50 +137,50 @@ rules:
       - pattern-either:
           # A hand-rolled scan comparing a record's id to the path parameter.
           - pattern: |
-              @$APP.route(...)
+              @$APP.$METHOD(...)
               def $VIEW(..., $ID, ...):
                   ...
                   <... $REC["id"] == $ID ...>
                   ...
           - pattern: |
-              @$APP.route(...)
+              @$APP.$METHOD(...)
               def $VIEW(..., $ID, ...):
                   ...
                   <... $REC.id == $ID ...>
                   ...
           # The ORM forms, which is what generated code usually produces.
           - pattern: |
-              @$APP.route(...)
+              @$APP.$METHOD(...)
               def $VIEW(..., $ID, ...):
                   ...
                   <... $MODEL.query.get($ID) ...>
                   ...
           - pattern: |
-              @$APP.route(...)
+              @$APP.$METHOD(...)
               def $VIEW(..., $ID, ...):
                   ...
                   <... $MODEL.query.get_or_404($ID) ...>
                   ...
           - pattern: |
-              @$APP.route(...)
+              @$APP.$METHOD(...)
               def $VIEW(..., $ID, ...):
                   ...
                   <... $MODEL.query.filter_by(id=$ID) ...>
                   ...
           - pattern: |
-              @$APP.route(...)
+              @$APP.$METHOD(...)
               def $VIEW(..., $ID, ...):
                   ...
                   <... $MODEL.objects.get(pk=$ID) ...>
                   ...
           - pattern: |
-              @$APP.route(...)
+              @$APP.$METHOD(...)
               def $VIEW(..., $ID, ...):
                   ...
                   <... $MODEL.objects.get(id=$ID) ...>
                   ...
           - pattern: |
-              @$APP.route(...)
+              @$APP.$METHOD(...)
               def $VIEW(..., $ID, ...):
                   ...
                   <... $COLL.find_one({"_id": $ID}) ...>
@@ -189,11 +189,103 @@ rules:
       # ownership column, so the lookup is keyed on the client-supplied id
       # alone. These run against the whole handler, which is why the range
       # matters above.
+      # The decorator is matched generically, and that is the whole of the
+      # FastAPI fix. Every alternative above used to be anchored on
+      # `@$APP.route(...)`, which is Flask's spelling and nothing else's.
+      # FastAPI writes `@router.get("/orders/{order_id}")`, so the pack's
+      # flagship access-control rule could not fire on a FastAPI application
+      # at all -- while the adapter detected FastAPI, extracted its routes,
+      # and the README listed it as supported.
+      #
+      # The method name is constrained rather than left free, so an unrelated
+      # decorator on a function that happens to do a lookup is not a hit.
+      - metavariable-regex:
+          metavariable: $METHOD
+          regex: '^(route|get|post|put|patch|delete|head|options)$'
       - pattern-not-regex: >-
           (?s)(current_user|request\.user|g\.user|session\[|user_id|owner_id|tenant_id|account_id|created_by)
       - pattern-not-regex: >-
           (?s)(authorize|has_permission|check_access|assert_owner|require_owner|can_access)\s*\(
 
+
+  - id: idor-missing-ownership-check-django
+    languages: [python]
+    severity: ERROR
+    message: >-
+      This view looks up a record by an identifier taken from the URL without
+      scoping the query to the current user. Django routes a path parameter
+      straight into the view's arguments, so any authenticated caller can read
+      another user's record by changing the id.
+    metadata:
+      category: security
+      cwe:
+        - "CWE-639: Authorization Bypass Through User-Controlled Key"
+      owasp:
+        - "A01:2021 - Broken Access Control"
+      confidence: MEDIUM
+      vibekiller:
+        rule_id: idor.missing-ownership-check
+        category: broken-access-control
+        severity: high
+        confidence: likely
+        fixable_by_giver: true
+        root_cause_hint: >-
+          The queryset is keyed only on the path parameter, so the record's
+          owner never enters the query.
+        guidance: >-
+          Filter the queryset by the caller as well as the id, for example
+          Order.objects.filter(pk=order_id, user=request.user).first(), and
+          return 404 rather than 403 when it misses so the view does not
+          confirm that another user's record exists.
+        dynamic_rule: idor.sequential-id-access
+    # A Django function-based view carries no decorator to anchor on: the URL
+    # is bound in urls.py and the view is a plain function whose first
+    # parameter is the request. That is why this is a separate rule rather
+    # than another alternative in the decorated one -- there is no decorator
+    # to generalize.
+    #
+    # The whole function stays the match range, for the reason the decorated
+    # rule documents: the ownership exclusions below are evaluated against the
+    # range, so narrowing it would quietly switch them off.
+    patterns:
+      - pattern-either:
+          - pattern: |
+              def $VIEW($REQ, ..., $ID, ...):
+                  ...
+                  <... $MODEL.objects.get(pk=$ID) ...>
+                  ...
+          - pattern: |
+              def $VIEW($REQ, ..., $ID, ...):
+                  ...
+                  <... $MODEL.objects.get(id=$ID) ...>
+                  ...
+          - pattern: |
+              def $VIEW($REQ, ..., $ID, ...):
+                  ...
+                  <... $MODEL.objects.filter(pk=$ID) ...>
+                  ...
+          - pattern: |
+              def $VIEW($REQ, ..., $ID, ...):
+                  ...
+                  <... get_object_or_404($MODEL, pk=$ID) ...>
+                  ...
+          - pattern: |
+              def $VIEW($REQ, ..., $ID, ...):
+                  ...
+                  <... get_object_or_404($MODEL, id=$ID) ...>
+                  ...
+      # The first parameter has to actually be the request, or this would
+      # match any two-argument helper that happens to query by id.
+      - metavariable-regex:
+          metavariable: $REQ
+          regex: '^request$'
+      # Nothing in the view refers to the authenticated principal or to an
+      # ownership column. request.user is in this list, which is what keeps
+      # the rule off a correctly scoped queryset.
+      - pattern-not-regex: >-
+          (?s)(current_user|request\.user|user_id|owner_id|tenant_id|account_id|created_by)
+      - pattern-not-regex: >-
+          (?s)(authorize|has_permission|check_access|assert_owner|require_owner|can_access)\s*\(
 
   - id: route-without-auth-middleware-express
     languages: [javascript, typescript]

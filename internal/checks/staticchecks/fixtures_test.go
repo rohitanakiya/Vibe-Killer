@@ -117,33 +117,60 @@ func TestRulePackFiresOnVulnerableFixtures(t *testing.T) {
 			},
 		},
 		{
-			// The third stack. The list is shorter than Flask's and that is
-			// the finding rather than an oversight: several rules in the pack
-			// are shaped around Flask and Django request idioms and cannot
-			// match FastAPI, so they are deliberately absent here. See the
-			// FRAMEWORK-GAP notes in the fixture.
+			// The third stack, and the one that measures whether a rule is
+			// written for Python or only for Flask.
+			//
+			// This list used to be six rules long, and the four that have
+			// joined it are the four that could not fire on FastAPI for
+			// reasons that had nothing to do with the fixture:
+			// idor.missing-ownership-check was anchored on @app.route,
+			// ssrf.user-supplied-url-fetched took its taint sources from a
+			// Flask request object that FastAPI has no equivalent of,
+			// auth.jwt-unsigned-algorithm-accepted only matched "none" as the
+			// first algorithm in the list, and
+			// crypto.tls-verification-disabled matched nothing on Python at
+			// all. All four are reported here now.
 			fixture: "fastapi-vulnerable",
 			wantRule: []string{
 				"injection.sql-string-built-from-input",
 				"traversal.path-built-from-input",
 				"auth.jwt-not-verified",
+				"auth.jwt-unsigned-algorithm-accepted",
 				"crypto.password-fast-digest",
 				"crypto.predictable-token",
 				"crypto.non-constant-time-comparison",
+				"crypto.tls-verification-disabled",
+				"idor.missing-ownership-check",
+				"ssrf.user-supplied-url-fetched",
 			},
 		},
 		{
+			// injection.code-evaluation-of-input is deliberately not on this
+			// list any more, and its absence is a fix rather than a loss.
+			// server.js contains no eval, no Function constructor and no vm
+			// call; what it has is `exec('convert ' + req.body.filename)`.
+			// The rule declared [javascript, typescript, python] and listed
+			// `exec(...)` as a sink for Python's exec builtin, where in
+			// JavaScript it matched child_process.exec -- so the fixture's
+			// command injection was reported a second time, as code
+			// evaluation, in a different category. Splitting the rule per
+			// language removed the collision.
+			//
+			// crypto.password-fast-digest has joined the list for the
+			// opposite reason: it never matched JavaScript at all, because
+			// the digest pattern stopped at the algorithm name and the
+			// credential-name filter had no password left in range.
 			fixture: "express-vulnerable",
 			wantRule: []string{
 				"idor.missing-ownership-check",
 				"injection.sql-string-built-from-input",
 				"injection.command-built-from-input",
-				"injection.code-evaluation-of-input",
 				"traversal.path-built-from-input",
 				"ssrf.user-supplied-url-fetched",
 				"auth.jwt-not-verified",
 				"auth.session-cookie-unprotected",
 				"authz.client-supplied-role",
+				"crypto.password-fast-digest",
 				"crypto.predictable-token",
 				"misconfig.cors-credentialed-wildcard",
 				"misconfig.error-detail-disclosed",
