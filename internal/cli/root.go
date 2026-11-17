@@ -32,7 +32,7 @@ import (
 // regression is argued from the history of which build saw what. At release
 // time, one commit sets this to the bare version, the tag points at that
 // commit, and the next commit restores -dev.
-var Version = "1.0.0"
+var Version = "1.1.0-dev"
 
 // Exit codes. These are the CLI's contract with a CI pipeline, so they are
 // deliberately few and stable.
