@@ -30,6 +30,16 @@ history.db
 # manifests are committed, so an installed tree is disposable and should never
 # be pushed under a repo whose README tells people to scan it.
 node_modules/
+
+# express-patched deliberately has no committed lockfile where its vulnerable
+# twin does, so scripts/dynamic-check.sh installs it with npm install rather
+# than npm ci. That writes a lockfile, and `git add -A` after a dynamic run
+# then commits it -- which has happened twice. Ignoring it keeps the decision
+# where it was made instead of where a script left a file. Giving that fixture
+# a committed lockfile is a real option; it would pin its transitive versions
+# as the twin's are, and change what the dependency check reads there from
+# three direct pins to a full tree. That is a choice to make deliberately.
+/fixtures/express-patched/package-lock.json
 __pycache__/
 *.pyc
 venv/
