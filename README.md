@@ -282,9 +282,11 @@ and inventing a `DELETE` the URLconf never promised would have them send a
 destructive request to an endpoint that might honour it. For the same reason a
 DRF `ReadOnlyModelViewSet` gets its two read routes and no more.
 
-The dynamic layer has still never run against a live Django instance. What
-changed is that its routes are now extracted and tested; proving the endpoint
-checks against a running Django app is a separate piece of work.
+The dynamic layer runs against a live Django instance in CI, as the fourth
+leg of the `dynamic` matrix: `fixtures/django-vulnerable` is started, seeded
+and scanned, and ten findings are confirmed against it. That was a separate
+piece of work from the extraction above, and doing it is what found three
+rules in this pack that had gone silent -- see the fixtures section below.
 
 That gap used to be invisible, which made it worse than the gap itself. A
 detected framework with an empty route list still satisfied the surface gate,

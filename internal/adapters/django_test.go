@@ -16,8 +16,13 @@ import (
 // exercising is the URLconf tree: includes nested two deep, re_path regexes,
 // a class-based view, a DRF router with two different viewset bases, and
 // methods declared four different ways. One runnable app would cover a
-// fraction of that, and the dynamic layer has never been run against a live
-// Django instance in any case -- which this does not claim to change.
+// fraction of that.
+//
+// The runnable half lives in fixtures/django-{vulnerable,patched}, which the
+// dynamic CI leg starts and scans. The two are complementary and neither
+// replaces the other: this file proves the extractor against shapes no single
+// application would contain, and the fixtures prove the endpoint checks
+// against a server that actually answers.
 
 func djangoProjectRoot(t *testing.T) string {
 	t.Helper()
