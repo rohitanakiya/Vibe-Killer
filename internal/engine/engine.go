@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -743,15 +744,47 @@ func attachRuntime(ctx context.Context, env *check.Env, cfg *config.Config, noti
 	}
 	notice("\n" + agent.Instructions(sink.URL(), path))
 
-	// Give the operator's already-running app a moment to report, in case the
-	// agent is installed from a previous run.
+	// One request of our own, and it is what makes the runtime layer reachable
+	// at all.
+	//
+	// Eligibility for the whole run is decided before any check executes, and
+	// the runtime gate asks whether an observation has arrived. An agent only
+	// reports when the application serves a request, so on an instance that is
+	// not being used nothing had arrived, the runtime checks were skipped, and
+	// the advice printed was "restart your application and scan again" -- which
+	// fails the same way, because the next run opens a new sink and waits
+	// another two seconds. Measured against the Flask fixture with the agent
+	// correctly installed and VIBEKILLER_SINK set: skipped, every time. The
+	// layer was documented, had two checks and a pair of shipped agents, and
+	// could not be reached without the operator generating traffic inside a
+	// two-second window nothing told them about.
+	//
+	// The checks themselves send their own correlated requests once they are
+	// eligible, so the only thing missing was proof that the agent was alive.
+	// This sends it. The guard authorizes it like any other request, and a 404
+	// serves the purpose as well as a 200 -- what matters is that the
+	// application handled something and said so.
+	if env.Target != "" && env.HTTP != nil {
+		if _, perr := env.HTTP.Do(ctx, httpx.Request{
+			RuleID:  "runtime.agent-liveness",
+			Method:  http.MethodGet,
+			URL:     env.Target,
+			Headers: map[string]string{runtime.HeaderCorrelation: "vk-agent-liveness"},
+			Note: "one request so the agent has something to report, which is how " +
+				"an attached agent is told from an absent one",
+		}); perr != nil {
+			env.Run.Log("runtime.liveness.failed", map[string]any{"error": perr.Error()})
+		}
+	}
+
 	if sink.WaitForAgent(ctx, 2*time.Second) {
 		notice("The runtime agent is reporting; runtime checks will run.")
 		return nil
 	}
 
-	notice("No observations have arrived yet, so the runtime checks will be skipped for this run. " +
-		"Install the agent as above, restart your application, and scan again.")
+	notice("No observations have arrived, so the runtime checks will be skipped for this run. " +
+		"Install the agent as above and restart your application; a request was just sent to " +
+		"the target, so if the agent were attached it would have reported.")
 	return nil
 }
 

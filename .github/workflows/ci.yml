@@ -340,3 +340,19 @@ jobs:
 
       - name: Confirm nothing against ${{ matrix.stack }}-patched
         run: bash scripts/dynamic-check.sh ${{ matrix.stack }} patched
+
+      # The runtime layer, on the one stack whose fixture has the agent's call
+      # sites. It is the last layer that had never run against an application:
+      # its two checks were tested against recorders, and the gate that decides
+      # whether they may run asks whether an observation has arrived, which on
+      # an idle instance it never had. So the layer was documented, shipped two
+      # agents, and could not be reached.
+      #
+      # This installs the agent as an operator would, starts the app with
+      # VIBEKILLER_SINK set, and requires both runtime checks to report. The
+      # weaknesses they find are the two that only an observation can see: an
+      # authorization decorator that is declared and never executes, and a
+      # record read whose statement constrains no owner.
+      - name: Observe ${{ matrix.stack }} at runtime
+        if: matrix.stack == 'flask'
+        run: bash scripts/dynamic-check.sh ${{ matrix.stack }} runtime

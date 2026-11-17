@@ -21,6 +21,36 @@ from flask import Flask, g, jsonify, request
 
 app = Flask(__name__)
 
+# The runtime agent's three call sites.
+#
+# Vibe Killer does not instrument anything: it prints an agent for an operator
+# to add to their own application and delete afterwards. This fixture keeps the
+# call sites so that the runtime layer can be exercised against a real server
+# rather than against a recorder, which is the only way to find out whether the
+# shipped agent works. The module itself is not committed here -- a run copies
+# it in -- so the stub below is what makes the fixture still runnable on its
+# own, and the agent does nothing anyway unless VIBEKILLER_SINK is set.
+try:
+    import vibekiller_agent
+except ImportError:
+
+    class _NoAgent:
+        @staticmethod
+        def attach(_app):
+            pass
+
+        @staticmethod
+        def note_auth(_name):
+            pass
+
+        @staticmethod
+        def observe_cursor(cursor):
+            return cursor
+
+    vibekiller_agent = _NoAgent()
+
+vibekiller_agent.attach(app)
+
 # VULN: the signing secret is in the source, so anyone with the repository can
 # mint a token for any user.
 JWT_SECRET = "supersecret"
@@ -61,6 +91,7 @@ def require_auth(fn):
         if user is None:
             return jsonify({"error": "authentication required"}), 401
         g.user = user
+        vibekiller_agent.note_auth("require_auth")
         return fn(*args, **kwargs)
 
     return wrapper
@@ -82,13 +113,45 @@ def health():
 
 # VULN (idor.sequential-id-access): authenticated, then looks the order up by
 # the id in the URL with no ownership check.
+#
+# VULN (runtime.query-missing-owner-filter): the statement is parameterised, so
+# there is no injection here, and it constrains the id and nothing else. That
+# is the weakness only the runtime layer can see: from outside, a response
+# carrying someone else's record looks the same whether the query filtered on
+# the owner and the application leaked it afterwards, or the query never
+# mentioned the owner at all. The agent reports the statement's shape, which
+# settles it.
 @app.route("/api/orders/<int:order_id>", methods=["GET"])
 @require_auth
 def get_order(order_id):
-    for order in ORDERS:
-        if order["id"] == order_id:
-            return jsonify(order)
-    return jsonify({"error": "not found"}), 404
+    cursor = vibekiller_agent.observe_cursor(get_db().cursor())
+    cursor.execute("SELECT id, item, user_id, note FROM orders WHERE id = ?", (order_id,))
+    row = cursor.fetchone()
+    if row is None:
+        return jsonify({"error": "not found"}), 404
+    return jsonify({"id": row[0], "item": row[1], "user_id": row[2], "note": row[3]})
+
+
+# VULN (runtime.auth-check-not-fired): this decorator was added to protect the
+# route and never checks anything -- the body was lost in a refactor, or it was
+# a stub nobody finished. Static analysis sees a route with authorization on it
+# and is satisfied; a caller with no credentials is served. Only an observation
+# of what actually ran during the request can tell the difference, which is the
+# whole reason the runtime layer exists.
+def require_admin(fn):
+    from functools import wraps
+
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        return fn(*args, **kwargs)
+
+    return wrapper
+
+
+@app.route("/api/admin/stats", methods=["GET"])
+@require_admin
+def admin_stats():
+    return jsonify({"orders": len(ORDERS), "profiles": len(PROFILES)})
 
 
 # VULN (authz.unprotected-endpoint): no authentication at all, and it returns
@@ -119,7 +182,7 @@ def create_order():
 def search():
     term = request.args.get("q", "")
     conn = get_db()
-    cursor = conn.cursor()
+    cursor = vibekiller_agent.observe_cursor(conn.cursor())
     cursor.execute(f"SELECT id, item FROM orders WHERE item LIKE '%{term}%'")
     return jsonify([{"id": r[0], "item": r[1]} for r in cursor.fetchall()])
 
@@ -182,11 +245,11 @@ def hash_password(password):
 def get_db():
     if "db" not in g:
         g.db = sqlite3.connect(":memory:")
-        g.db.execute("CREATE TABLE orders (id INTEGER, item TEXT, user_id TEXT)")
+        g.db.execute("CREATE TABLE orders (id INTEGER, item TEXT, user_id TEXT, note TEXT)")
         for order in ORDERS:
             g.db.execute(
-                "INSERT INTO orders VALUES (?, ?, ?)",
-                (order["id"], order["item"], order["user_id"]),
+                "INSERT INTO orders VALUES (?, ?, ?, ?)",
+                (order["id"], order["item"], order["user_id"], order.get("note", "")),
             )
         g.db.commit()
     return g.db

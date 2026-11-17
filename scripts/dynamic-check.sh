@@ -48,8 +48,17 @@ flask | express | fastapi) ;;
 esac
 case "$MODE" in
 vulnerable | patched) ;;
+runtime)
+    # The runtime mode scans the vulnerable fixture with an agent attached.
+    # Only Flask has one wired up: internal/runtime/agents ships agents for
+    # Flask and Express, and the Flask fixture is where the call sites are.
+    if [ "$STACK" != "flask" ]; then
+        echo "runtime mode is only wired up for flask" >&2
+        exit 2
+    fi
+    ;;
 *)
-    echo "usage: $0 <flask|express|fastapi> <vulnerable|patched>" >&2
+    echo "usage: $0 <flask|express|fastapi> <vulnerable|patched|runtime>" >&2
     exit 2
     ;;
 esac
@@ -57,7 +66,13 @@ esac
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-FIXTURE="fixtures/$STACK-$MODE"
+# runtime scans the vulnerable fixture; the mode names what is being proven,
+# not a separate application.
+FIXTURE_MODE="$MODE"
+if [ "$MODE" = "runtime" ]; then
+    FIXTURE_MODE="vulnerable"
+fi
+FIXTURE="fixtures/$STACK-$FIXTURE_MODE"
 if [ ! -d "$FIXTURE" ]; then
     echo "no such fixture: $FIXTURE" >&2
     exit 2
@@ -70,8 +85,21 @@ fi
 PORT="${PORT:-5000}"
 TARGET="http://127.0.0.1:$PORT"
 
+# The sink port the agent posts to. It has to match runtime.proxy_port in the
+# config, because the agent is started before the scan and so before the sink
+# exists -- the operator's app is told where to post, then the scan binds it.
+SINK_PORT="${SINK_PORT:-18080}"
+
 WORK="$(mktemp -d)"
 APP_PID=""
+
+# Where the application is served from, and what the scan is pointed at. Both
+# are the fixture itself except in runtime mode, which works on a copy: the
+# agent is a file the operator adds beside their app and deletes afterwards, so
+# it has no business being committed to a fixture, and attachRuntime writes it
+# into whatever directory it is scanning.
+APP_DIR="$FIXTURE"
+SCAN_REPO="$FIXTURE"
 
 cleanup() {
     if [ -n "$APP_PID" ] && kill -0 "$APP_PID" 2>/dev/null; then
@@ -86,6 +114,22 @@ trap cleanup EXIT
 # environment rather than carrying one in the source -- that being the fix
 # their vulnerable twins are missing. Each stack names them differently, so all
 # of them are set.
+if [ "$MODE" = "runtime" ]; then
+    APP_DIR="$WORK/app"
+    SCAN_REPO="$WORK/app"
+    cp -r "$FIXTURE" "$APP_DIR"
+    rm -rf "$APP_DIR/__pycache__"
+
+    # The agent as shipped, not a copy kept in the fixture: if the two could
+    # drift, this would be testing the copy.
+    cp internal/runtime/agents/python-flask.py "$APP_DIR/vibekiller_agent.py"
+
+    # With this unset the agent does nothing at all, which is how the fixture
+    # stays an ordinary application the rest of the time.
+    export VIBEKILLER_SINK="http://127.0.0.1:$SINK_PORT/observe"
+    echo "==> runtime mode: agent installed, sink at $VIBEKILLER_SINK"
+fi
+
 export JWT_SIGNING_KEY="dynamic-check-only-not-a-secret"
 export FIXTURE_JWT_SECRET="dynamic-check-only-not-a-secret"
 export ADMIN_API_KEY="dynamic-check-only-not-a-secret"
@@ -114,11 +158,11 @@ start_python_fixture() {
     [ -x "$py" ] || py="$WORK/venv/Scripts/python.exe"
 
     "$py" -m pip install --quiet --disable-pip-version-check --upgrade pip
-    "$py" -m pip install --quiet --disable-pip-version-check -r "$FIXTURE/requirements.txt"
+    "$py" -m pip install --quiet --disable-pip-version-check -r "$APP_DIR/requirements.txt"
 
-    echo "==> starting $FIXTURE on $TARGET"
+    echo "==> starting $APP_DIR on $TARGET"
     (
-        cd "$FIXTURE"
+        cd "$APP_DIR"
         exec "$py" -c "$entry"
     ) >"$WORK/app.log" 2>&1 &
     APP_PID=$!
@@ -131,7 +175,7 @@ flask)
     # running the vulnerable app with the debugger off would quietly disarm a
     # check under test -- and the patched fixture's fix *is* that the debugger
     # is off.
-    if [ "$MODE" = "vulnerable" ]; then FLASK_DEBUG_FLAG="True"; else FLASK_DEBUG_FLAG="False"; fi
+    if [ "$FIXTURE_MODE" = "vulnerable" ]; then FLASK_DEBUG_FLAG="True"; else FLASK_DEBUG_FLAG="False"; fi
     # use_reloader=False in both cases. The reloader forks, and a fixture that
     # outlives the script is a port left bound for whatever runs next.
     start_python_fixture "from app import app; app.run(host='127.0.0.1', port=$PORT, debug=$FLASK_DEBUG_FLAG, use_reloader=False)"
@@ -140,20 +184,20 @@ fastapi)
     start_python_fixture "import uvicorn; from main import app; uvicorn.run(app, host='127.0.0.1', port=$PORT, log_level='warning')"
     ;;
 express)
-    echo "==> installing $FIXTURE (node $(node --version))"
+    echo "==> installing $APP_DIR (node $(node --version))"
     # npm ci where a lockfile is committed, because then the transitive pins
     # are fixed and are what the dependency check reads. express-vulnerable
     # has one; express-patched does not, so its transitive versions resolve
     # fresh and npm ci refuses to run at all.
-    if [ -f "$FIXTURE/package-lock.json" ]; then
-        (cd "$FIXTURE" && npm ci --no-audit --no-fund >/dev/null)
+    if [ -f "$APP_DIR/package-lock.json" ]; then
+        (cd "$APP_DIR" && npm ci --no-audit --no-fund >/dev/null)
     else
-        (cd "$FIXTURE" && npm install --no-audit --no-fund >/dev/null)
+        (cd "$APP_DIR" && npm install --no-audit --no-fund >/dev/null)
     fi
 
-    echo "==> starting $FIXTURE on $TARGET"
+    echo "==> starting $APP_DIR on $TARGET"
     (
-        cd "$FIXTURE"
+        cd "$APP_DIR"
         exec node server.js
     ) >"$WORK/app.log" 2>&1 &
     APP_PID=$!
@@ -199,12 +243,18 @@ echo "    up after $((WAITED / 2))s"
 
 echo "==> scanning with --target"
 set +e
+RUNTIME_FLAG=""
+if [ "$MODE" = "runtime" ]; then
+    RUNTIME_FLAG="--with-runtime"
+fi
+
 VK_USERA_TOKEN="userA-token" VK_USERB_TOKEN="userB-token" \
     go run ./cmd/vibekiller scan \
-    --repo "$FIXTURE" \
+    --repo "$SCAN_REPO" \
     --config vibekiller.config.yaml \
     --target "$TARGET" \
     --i-own-this-target \
+    $RUNTIME_FLAG \
     --runs-dir "$WORK/runs" >"$WORK/scan.log" 2>&1
 SCAN_STATUS=$?
 set -e
@@ -286,7 +336,52 @@ problems = []
 for f in failed:
     problems.append("check %s failed: %s" % (f.get("check_id"), f.get("error")))
 
-if mode == "vulnerable":
+if mode == "runtime":
+    # The runtime layer, which until this existed had never run against an
+    # application at all. Its two checks are what an outside observer cannot
+    # determine: whether the authorization a route declares actually executed,
+    # and whether the statement behind a record read constrained its owner.
+    skipped_ids = {s.get("check_id") for s in (doc.get("skipped") or [])}
+    runtime_rules = {"runtime.auth-check-not-fired", "runtime.query-missing-owner-filter"}
+
+    # Reachability first, because that was the defect. Eligibility is decided
+    # before any check runs and the gate asks whether an observation has
+    # arrived; an agent only reports when the app serves a request, so on an
+    # idle instance the checks were skipped every single time, however
+    # correctly the agent was installed.
+    for rule in sorted(runtime_rules & skipped_ids):
+        problems.append("%s was skipped, so the runtime layer is unreachable again" % rule)
+
+    got = {f["rule_id"] for f in findings}
+    for rule in sorted(runtime_rules - got):
+        problems.append("%s produced no finding against the instrumented fixture" % rule)
+
+    # Two things must not travel, and both are checked on the value rather
+    # than on a string that resembles it. The `auth` field is a constructed
+    # label -- evidenceRequest appends "-token" to the seeded user's id -- so
+    # looking for "userA-token" anywhere in the finding proves nothing; this
+    # fixture's token value happens to be that exact string.
+    for f in findings:
+        if f["rule_id"] not in runtime_rules:
+            continue
+        headers = ((f.get("evidence") or {}).get("request") or {}).get("headers") or {}
+        for name, value in headers.items():
+            if name.lower() in ("authorization", "cookie") and value != "<redacted>":
+                problems.append("%s carries an unredacted %s header" % (f["rule_id"], name))
+
+    # The statement's shape is what an observation carries. Parameter values
+    # are what it must never carry, and the sink refuses an observation that
+    # looks like it holds them, so a bound value appearing here would mean
+    # that refusal had stopped working.
+    for f in findings:
+        if f["rule_id"] != "runtime.query-missing-owner-filter":
+            continue
+        observed = (f.get("evidence") or {}).get("observed", "")
+        if "?" not in observed:
+            problems.append("the query evidence shows no placeholder, so it may carry values: %s"
+                            % observed[:120])
+
+elif mode == "vulnerable":
     got = {f["rule_id"] for f in confirmed}
     for rule in sorted(EXPECTED[stack] - got):
         problems.append("%s did not reproduce against the running fixture" % rule)

@@ -46,7 +46,14 @@ func (c *SQLDifferential) Meta() check.Meta {
 }
 
 // maxInjectionProbes bounds the request count on a large application.
-const maxInjectionProbes = 20
+// maxInjectionProbes bounds the requests this check sends.
+//
+// It is spent breadth-first across routes, so the number that matters is how
+// many routes get their first parameter name tried rather than how many names
+// one route gets. Sixty is two requests each for thirty routes, which covers
+// an ordinary application's read surface; a larger one truncates depth, and
+// the run log says how many routes still had names untried.
+const maxInjectionProbes = 60
 
 // benignValue is the baseline: a plain identifier-shaped string that no
 // handler should choke on.
@@ -68,6 +75,27 @@ func (c *SQLDifferential) Detect(ctx context.Context, env *check.Env) ([]finding
 	probes := 0
 	seen := map[string]bool{}
 
+	// Collect the work first, then spend the budget breadth-first across
+	// routes rather than depth-first within one.
+	//
+	// Depth-first meant the first route consumed the budget. A route with no
+	// path parameter gets one slot per name in commonQueryParams, which is ten
+	// slots and twenty requests -- the whole allowance -- so whether a later
+	// route was probed at all came down to the order the adapter happened to
+	// enumerate routes in. Adding one unrelated endpoint to a fixture was
+	// enough to stop this check reaching the route that actually had the
+	// injection, and nothing in the output said a route had gone unprobed.
+	//
+	// Breadth-first makes a truncated budget cost parameter names rather than
+	// whole routes: every route gets its first slot before any route gets its
+	// second.
+	type work struct {
+		route surface.Route
+		slots []slot
+	}
+	var routes []work
+	deepest := 0
+
 	for _, route := range env.Surface.Routes {
 		// Read-only: a GET cannot change state whatever the handler does with
 		// the value.
@@ -79,29 +107,52 @@ func (c *SQLDifferential) Detect(ctx context.Context, env *check.Env) ([]finding
 		}
 		seen[route.Path] = true
 
-		for _, slot := range c.slotsFor(route) {
+		slots := c.slotsFor(route)
+		if len(slots) == 0 {
+			continue
+		}
+		routes = append(routes, work{route: route, slots: slots})
+		if len(slots) > deepest {
+			deepest = len(slots)
+		}
+	}
+
+	// A route stops being probed once it has produced a finding: the missing
+	// boundary is a property of the handler, not of the parameter.
+	done := make([]bool, len(routes))
+
+	for depth := 0; depth < deepest; depth++ {
+		for i := range routes {
+			if done[i] || depth >= len(routes[i].slots) {
+				continue
+			}
 			if probes >= maxInjectionProbes {
+				unprobed := 0
+				for j := range routes {
+					if !done[j] && depth < len(routes[j].slots) {
+						unprobed++
+					}
+				}
 				env.Run.Log("check.note", map[string]any{
 					"rule_id": ruleID,
-					"note":    fmt.Sprintf("stopped after %d probes to keep the request count bounded", maxInjectionProbes),
+					"note": fmt.Sprintf("stopped after %d probes to keep the request count bounded; "+
+						"%d route(s) still had parameter names untried", maxInjectionProbes, unprobed),
 				})
 				return out, nil
 			}
 
-			f, sent, err := c.probeSlot(ctx, env, route, slot)
+			f, sent, err := c.probeSlot(ctx, env, routes[i].route, routes[i].slots[depth])
 			probes += sent
 			if err != nil {
 				env.Run.Log("check.note", map[string]any{
-					"rule_id": ruleID, "route": route.Endpoint(),
+					"rule_id": ruleID, "route": routes[i].route.Endpoint(),
 					"note": "probe could not complete: " + err.Error(),
 				})
 				continue
 			}
 			if f != nil {
 				out = append(out, *f)
-				// One finding per route is enough: the missing boundary is a
-				// property of the handler, not of the parameter.
-				break
+				done[i] = true
 			}
 		}
 	}
