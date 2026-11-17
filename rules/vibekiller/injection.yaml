@@ -254,12 +254,18 @@ rules:
               def $VIEW(..., $PARAM, ...):
                   ...
           - pattern: $PARAM
+          - metavariable-regex:
+              metavariable: $METHOD
+              regex: '^(route|get|post|put|patch|delete|head|options)$'
       - patterns:
           - pattern-inside: |
               @$APP.$METHOD(...)
               async def $VIEW(..., $PARAM, ...):
                   ...
           - pattern: $PARAM
+          - metavariable-regex:
+              metavariable: $METHOD
+              regex: '^(route|get|post|put|patch|delete|head|options)$'
     pattern-sanitizers:
       - pattern: 'shlex.quote(...)'
       - pattern: 'int(...)'
@@ -369,12 +375,18 @@ rules:
               def $VIEW(..., $PARAM, ...):
                   ...
           - pattern: $PARAM
+          - metavariable-regex:
+              metavariable: $METHOD
+              regex: '^(route|get|post|put|patch|delete|head|options)$'
       - patterns:
           - pattern-inside: |
               @$APP.$METHOD(...)
               async def $VIEW(..., $PARAM, ...):
                   ...
           - pattern: $PARAM
+          - metavariable-regex:
+              metavariable: $METHOD
+              regex: '^(route|get|post|put|patch|delete|head|options)$'
     pattern-sinks:
       - pattern-either:
           - pattern: 'eval(...)'
@@ -474,11 +486,27 @@ rules:
     # so there is no request value on the line to match and no taint source to
     # trace from. Inside a route handler, opening a path that is not a literal
     # is the pattern worth reporting.
+    # The decorator's name is constrained, and leaving it free was a
+    # false-positive generator rather than a loose end.
+    #
+    # Semgrep resolves an imported name to its qualified form and treats a
+    # bare decorator as a call, so `@$APP.$ROUTE(...)` was satisfied by *any*
+    # imported decorator -- measured with `@wraps` from functools, which has
+    # nothing to do with routing. The anchor read as "this is a route handler"
+    # and meant "this function has a decorator", so the rule fired on any
+    # decorated function that opened a non-literal path.
+    #
+    # It also means this rule cannot cover Django, whose views carry no route
+    # decorator at all. fixtures/django-vulnerable records that: its traversal
+    # is proven by the endpoint layer and not by this rule.
     patterns:
       - pattern-inside: |
           @$APP.$ROUTE(...)
           def $VIEW(...):
               ...
+      - metavariable-regex:
+          metavariable: $ROUTE
+          regex: '^(route|get|post|put|patch|delete|head|options)$'
       - pattern-either:
           - pattern: 'open(os.path.join(...), ...)'
           - patterns:

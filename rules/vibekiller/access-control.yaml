@@ -564,6 +564,9 @@ rules:
               @$APP.$METHOD(...)
               def $VIEW(..., $P: $MODEL, ...):
                   ...
+          - metavariable-regex:
+              metavariable: $METHOD
+              regex: '^(route|get|post|put|patch|delete|head|options)$'
           - pattern-inside: |
               if <... $P.$FIELD ...>:
                   ...
@@ -631,12 +634,18 @@ rules:
               def $VIEW(..., $PARAM, ...):
                   ...
           - pattern: $PARAM
+          - metavariable-regex:
+              metavariable: $METHOD
+              regex: '^(route|get|post|put|patch|delete|head|options)$'
       - patterns:
           - pattern-inside: |
               @$APP.$METHOD(...)
               async def $VIEW(..., $PARAM, ...):
                   ...
           - pattern: $PARAM
+          - metavariable-regex:
+              metavariable: $METHOD
+              regex: '^(route|get|post|put|patch|delete|head|options)$'
     pattern-sanitizers:
       # Naming the fields is the fix, so a dict built key by key is clean even
       # though its values came from the request.

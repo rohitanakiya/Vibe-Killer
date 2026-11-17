@@ -345,12 +345,18 @@ rules:
               def $VIEW(..., $PARAM, ...):
                   ...
           - pattern: $PARAM
+          - metavariable-regex:
+              metavariable: $METHOD
+              regex: '^(route|get|post|put|patch|delete|head|options)$'
       - patterns:
           - pattern-inside: |
               @$APP.$METHOD(...)
               async def $VIEW(..., $PARAM, ...):
                   ...
           - pattern: $PARAM
+          - metavariable-regex:
+              metavariable: $METHOD
+              regex: '^(route|get|post|put|patch|delete|head|options)$'
     pattern-sanitizers:
       - pattern: 'is_allowed_url(...)'
       - pattern: 'validate_url(...)'

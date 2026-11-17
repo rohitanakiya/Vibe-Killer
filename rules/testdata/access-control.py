@@ -8,6 +8,7 @@ switch them off silently. That is why each annotation sits above the decorator
 or the `def` rather than above the lookup.
 """
 
+from functools import lru_cache
 from fastapi import APIRouter, Depends, Header, HTTPException
 from flask import Flask, g, jsonify, request
 from pydantic import BaseModel
@@ -234,3 +235,24 @@ def fastapi_create_order_picked(payload: dict, user=Depends(get_current_user)):
     # ok: mass-assignment-request-body-python
     order.update({"item": payload["item"]})
     return order
+
+
+# --- a decorator is not a route ------------------------------------------
+#
+# See the note in injection.py: any imported decorator used to satisfy the
+# route anchor these rules hang their FastAPI sources on.
+
+@lru_cache(maxsize=8)
+def cached_bulk_update(payload: OrderIn):
+    order = {"id": 1}
+    # ok: mass-assignment-request-body-python
+    order.update(payload.model_dump())
+    return order
+
+
+@lru_cache(maxsize=8)
+def cached_is_admin(payload: PromoteIn):
+    # ok: authorization-decided-client-side-python
+    if payload.role == "admin":
+        return True
+    return False

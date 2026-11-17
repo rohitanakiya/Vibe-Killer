@@ -10,6 +10,7 @@ Each rule in the pack is required to appear here by
 TestEveryRuleHasABehaviourFixture, so a new rule cannot ship unexercised.
 """
 
+from functools import lru_cache
 import os
 import secrets
 import ssl
@@ -303,3 +304,14 @@ def serve_a_listing():
 def serve_an_application():
     # ok: directory-listing-or-whole-tree-served-python
     return HTTPServer(("127.0.0.1", 8000), ApplicationRequestHandler)
+
+
+# --- a decorator is not a route ------------------------------------------
+#
+# See the note in injection.py. This rule's FastAPI sources hung off the same
+# anchor, so a cached helper's argument was a taint source.
+
+@lru_cache(maxsize=8)
+def cached_fetch(url):
+    # ok: unsafe-fetch-of-user-supplied-url-python
+    return requests.get(url, timeout=10).text

@@ -9,6 +9,7 @@ path and body into the handler's parameters instead, so the taint never
 started and these injections reported nothing at all.
 """
 
+from functools import lru_cache
 import json
 import os
 import shlex
@@ -192,3 +193,32 @@ def fastapi_login_typed(email: str):
     # object in the body is a 422 rather than a query operator.
     # ok: nosql-query-built-from-request-object-python
     return users.find_one({"email": email})
+
+
+# --- a decorator is not a route ------------------------------------------
+#
+# Semgrep resolves an imported name to its qualified form and treats a bare
+# decorator as a call, so `@$APP.$METHOD(...)` was satisfied by any imported
+# decorator at all -- `@wraps` from functools included. Every one of these
+# rules anchored its FastAPI taint sources on that pattern, so every parameter
+# of every decorated function was a source. The method name is constrained
+# now, and these are what pin it.
+
+@lru_cache(maxsize=8)
+def cached_convert(name):
+    # ok: shell-command-built-from-input-python
+    os.system("convert " + name + " out.png")
+    return True
+
+
+@lru_cache(maxsize=8)
+def cached_eval(expr):
+    # ok: eval-of-request-data-python
+    return eval(expr)
+
+
+@lru_cache(maxsize=8)
+def cached_read(name):
+    # ok: path-built-from-request-value-python
+    with open(os.path.join(UPLOAD_ROOT, name), "rb") as fh:
+        return fh.read()
