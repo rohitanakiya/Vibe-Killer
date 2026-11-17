@@ -224,6 +224,15 @@ func (n *Node) EnumerateRoutes(ctx context.Context, repoRoot string, exclude []s
 		return nil, err
 	}
 
+	// Next.js is handled separately because its routes are not in the
+	// source at all: the path is the file's location on disk and the
+	// methods are the names of the functions it exports. See nextjs.go.
+	fromNext, nerr := nextRoutes(ctx, repoRoot, exclude)
+	if nerr != nil {
+		return nil, nerr
+	}
+	routes = append(routes, fromNext...)
+
 	return DedupeRoutes(routes), nil
 }
 

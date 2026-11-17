@@ -236,11 +236,21 @@ dependency manifests and finding secret usage all live behind a
 adapter, never a core change. The Node and Python adapters are implemented;
 generic checks (dependencies, secrets, headers, CORS) run stack-independently.
 
-Route extraction is where that interface is most and least complete. Express,
-Flask, FastAPI, Django, fastify, koa and NestJS have real extractors, each
-with a fixture that pins what it produces. Next.js is recognized by name --
-from the `next` dependency -- but nothing reads `app/api` yet, so it maps zero
-routes.
+Route extraction is where that interface is most complete. Express, Flask,
+FastAPI, Django, fastify, koa, NestJS and Next.js all have real extractors,
+each with a fixture that pins what it produces.
+
+Next.js needed the most unusual shape of the lot, because its routes are not
+in the source at all: the path is the file's location on disk and the methods
+are the names of the functions the file exports, so nothing a regex could find
+in a file says where that file is served. It reads the tree instead --
+`app/api/orders/[id]/route.ts` is `GET /api/orders/{id}` if the file exports a
+`GET`, route groups like `(internal)` organise files and contribute nothing to
+the URL, and `pages/api` is the other router, where one handler serves every
+method and the ones it accepts are read from its own `req.method` comparisons.
+A `page.tsx` is not an endpoint: the checks that consume this surface probe
+for broken access control and injection, and including pages would make a scan
+look broader than it is.
 
 Three of those were "implemented" for a long time without being right, and
 they failed the same way Django did: the thing that decides a route's path

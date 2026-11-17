@@ -1,0 +1,10 @@
+{
+  "name": "vk-testdata-nextjs",
+  "private": true,
+  "description": "Route-extraction fixture for Next.js. Not an application; it exists to be parsed.",
+  "dependencies": {
+    "next": "14.2.3",
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  }
+}

@@ -222,15 +222,16 @@ func CanRun(m Meta, env *Env) (bool, string) {
 		// outcome this tool must never produce.
 		//
 		// The state is real rather than hypothetical: an adapter can recognize
-		// a framework by name and still have no extractor for its routing.
-		// Next.js is detected today with no app/api support behind it, so the
-		// stack gets named confidently in the report while the endpoint layer
-		// silently covers nothing. Saying so is what the skip list is for.
+		// a framework by name and still have no extractor for its routing,
+		// and the report then names the stack confidently while the endpoint
+		// layer silently covers nothing. Saying so is what the skip list is
+		// for.
 		//
-		// Django was the other one, and it is why this gate exists at all:
-		// its routes are now read from the URLconf tree. A stack can still
-		// reach here through a layout no extractor recognizes, which is the
-		// case this is for.
+		// Django and Next.js were both in that state, and they are why this
+		// gate exists; their routes are read now. What remains is a stack
+		// whose routing no extractor recognizes, or a project laid out in a
+		// way one does not expect -- a Next.js app whose routes are all
+		// behind a rewrite, say -- which is exactly the case this is for.
 		if len(env.Surface.Routes) == 0 {
 			return false, noRoutesReason(env.Surface.Stack)
 		}
