@@ -69,6 +69,16 @@ def flask_order_scoped(order_id):
     return jsonify({"id": order.id})
 
 
+# The same unscoped query, with the record's owner serialised into the
+# response. That is not an ownership check, and the exclusion used to count it
+# as one -- it asked whether "user_id" appeared anywhere in the handler.
+# ruleid: idor-missing-ownership-check-python
+@app.route("/flask/orders-serialised/<int:order_id>")
+def flask_order_serialised(order_id):
+    order = Order.query.get_or_404(order_id)
+    return jsonify({"id": order.id, "user_id": order.user_id, "item": order.item})
+
+
 # --- idor-missing-ownership-check-python (FastAPI) -----------------------
 #
 # FastAPI writes @router.get, not @app.route. Every alternative in this rule
@@ -113,6 +123,26 @@ def order_detail_shortcut(request, order_id):
 # ok: idor-missing-ownership-check-django
 def order_detail_scoped(request, order_id):
     order = Order.objects.get(pk=order_id, user=request.user)
+    return JsonResponse({"id": order.pk})
+
+
+# This is the case that found the defect. fixtures/django-vulnerable has
+# exactly this view, the endpoint layer confirmed the IDOR against a live
+# server, and this rule stayed silent -- because the response serialises
+# user_id and the exclusion looked for that name anywhere in the view.
+# ruleid: idor-missing-ownership-check-django
+def order_detail_serialised(request, order_id):
+    order = Order.objects.get(pk=order_id)
+    return JsonResponse({"id": order.pk, "user_id": order.user_id, "total": order.total})
+
+
+# Scoped on the column rather than on request.user, because the view resolves
+# the principal itself. The owner is compared inside the query, so there is
+# nothing to report.
+# ok: idor-missing-ownership-check-django
+def order_detail_resolved(request, order_id):
+    caller = principal_for(request.headers.get("Authorization"))
+    order = Order.objects.get(pk=order_id, user_id=caller)
     return JsonResponse({"id": order.pk})
 
 
@@ -235,6 +265,26 @@ def fastapi_create_order_picked(payload: dict, user=Depends(get_current_user)):
     # ok: mass-assignment-request-body-python
     order.update({"item": payload["item"]})
     return order
+
+
+# Django reads the raw body and parses it itself. request.data is Django REST
+# Framework; request.body is a plain view, and it was the one source this rule
+# did not have -- so the sink below was reachable and never reached.
+def django_create_order(request):
+    payload = json.loads(request.body or b"{}")
+    # ruleid: mass-assignment-request-body-python
+    order = Order(**payload)
+    order.save()
+    return JsonResponse({"id": order.pk}, status=201)
+
+
+def django_create_order_picked(request):
+    payload = json.loads(request.body or b"{}")
+    # Naming the fields is the fix, whichever framework the body came from.
+    # ok: mass-assignment-request-body-python
+    order = Order(item=payload["item"], quantity=payload["quantity"])
+    order.save()
+    return JsonResponse({"id": order.pk}, status=201)
 
 
 # --- a decorator is not a route ------------------------------------------

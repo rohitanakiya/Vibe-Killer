@@ -430,13 +430,14 @@ EXPECTED = {
     # The widest of the four, because the fixture was written last and carries
     # every weakness the endpoint layer can prove.
     #
-    # Three of these are the only thing that reaches their weakness at all.
-    # A Django view carries no route decorator, so the traversal and mass
-    # assignment rules -- both anchored on one -- cannot match a Django
-    # handler, and the IDOR rule's ownership-column filter is defeated by a
-    # response that serialises the owner id. The fixture's docstring records
-    # each one. Static coverage of this stack is four rules; this list is what
-    # makes the rest of it provable.
+    # This list is also what found three defects in the static pack. When
+    # the fixture was new, the endpoint layer confirmed the IDOR, the
+    # traversal and the rest against a running server while the rules for
+    # those weaknesses reported nothing -- which is the only way to notice
+    # that a rule is silent rather than satisfied. All three are fixed and
+    # pinned in rules/testdata/; the Go suite asserts the seven static rules
+    # that now fire. Keep this leg: a rule that goes quiet again fails here
+    # first.
     "django": {
         "authz.unprotected-endpoint",
         "idor.sequential-id-access",

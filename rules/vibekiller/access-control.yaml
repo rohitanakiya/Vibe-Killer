@@ -80,8 +80,27 @@ rules:
           regex: '.*:[A-Za-z_][A-Za-z0-9_]*.*'
       # Nothing in the handler refers to the authenticated principal or to an
       # ownership column, so the lookup is keyed on that identifier alone.
+      # An ownership column only counts where it is assigned or compared --
+      # `user_id=uid`, `user_id == caller`, `AND user_id = ?`. It used to
+      # count anywhere in the handler, and that is a different question.
+      #
+      # Measured, not reasoned: one line added to a handler that has the bug,
+      #
+      #     return jsonify({"id": order.id, "user_id": order.user_id})
+      #
+      # switched this rule off in all three of its variants. Serialising a
+      # record's owner is entirely ordinary code, so the bug was hidden by
+      # correct code sitting beside it -- and the more completely a response
+      # is serialised, the likelier the rule went quiet. It surfaced on
+      # fixtures/django-vulnerable, where the endpoint layer confirmed the
+      # IDOR against a live server while this rule said nothing.
+      #
+      # A colon is deliberately not an assignment here: `"user_id": ...` is a
+      # dict key or a JSON field, which is how a response names the column.
       - pattern-not-regex: >-
-          (?s)(\.user\b|currentUser|current_user|\.session\b|userId|user_id|ownerId|owner_id|tenantId|tenant_id|accountId|account_id|createdBy|created_by)
+          (?s)(\.user\b|currentUser|current_user|\.session\b)
+      - pattern-not-regex: >-
+          (?s)\b(userId|user_id|ownerId|owner_id|tenantId|tenant_id|accountId|account_id|createdBy|created_by)\b\s*["'\]]*\s*(===?|=\s*[?$:])
       - pattern-not-regex: >-
           (?s)(authorize|requireOwner|assertOwner|verifyOwnership|checkAccess|ability)\s*\(
       # A handler that reads the filesystem is serving a file, not a record.
@@ -202,8 +221,27 @@ rules:
       - metavariable-regex:
           metavariable: $METHOD
           regex: '^(route|get|post|put|patch|delete|head|options)$'
+      # An ownership column only counts where it is assigned or compared --
+      # `user_id=uid`, `user_id == caller`, `AND user_id = ?`. It used to
+      # count anywhere in the handler, and that is a different question.
+      #
+      # Measured, not reasoned: one line added to a handler that has the bug,
+      #
+      #     return jsonify({"id": order.id, "user_id": order.user_id})
+      #
+      # switched this rule off in all three of its variants. Serialising a
+      # record's owner is entirely ordinary code, so the bug was hidden by
+      # correct code sitting beside it -- and the more completely a response
+      # is serialised, the likelier the rule went quiet. It surfaced on
+      # fixtures/django-vulnerable, where the endpoint layer confirmed the
+      # IDOR against a live server while this rule said nothing.
+      #
+      # A colon is deliberately not an assignment here: `"user_id": ...` is a
+      # dict key or a JSON field, which is how a response names the column.
       - pattern-not-regex: >-
-          (?s)(current_user|request\.user|g\.user|session\[|user_id|owner_id|tenant_id|account_id|created_by)
+          (?s)(current_user|request\.user|g\.user|session\[)
+      - pattern-not-regex: >-
+          (?s)\b(user|user_id|owner|owner_id|tenant_id|account_id|created_by)\b\s*["'\]]*\s*(==|=[^=])
       - pattern-not-regex: >-
           (?s)(authorize|has_permission|check_access|assert_owner|require_owner|can_access)\s*\(
 
@@ -282,8 +320,27 @@ rules:
       # Nothing in the view refers to the authenticated principal or to an
       # ownership column. request.user is in this list, which is what keeps
       # the rule off a correctly scoped queryset.
+      # An ownership column only counts where it is assigned or compared --
+      # `user_id=uid`, `user_id == caller`, `AND user_id = ?`. It used to
+      # count anywhere in the handler, and that is a different question.
+      #
+      # Measured, not reasoned: one line added to a handler that has the bug,
+      #
+      #     return jsonify({"id": order.id, "user_id": order.user_id})
+      #
+      # switched this rule off in all three of its variants. Serialising a
+      # record's owner is entirely ordinary code, so the bug was hidden by
+      # correct code sitting beside it -- and the more completely a response
+      # is serialised, the likelier the rule went quiet. It surfaced on
+      # fixtures/django-vulnerable, where the endpoint layer confirmed the
+      # IDOR against a live server while this rule said nothing.
+      #
+      # A colon is deliberately not an assignment here: `"user_id": ...` is a
+      # dict key or a JSON field, which is how a response names the column.
       - pattern-not-regex: >-
-          (?s)(current_user|request\.user|user_id|owner_id|tenant_id|account_id|created_by)
+          (?s)(current_user|request\.user)
+      - pattern-not-regex: >-
+          (?s)\b(user|user_id|owner|owner_id|tenant_id|account_id|created_by)\b\s*["'\]]*\s*(==|=[^=])
       - pattern-not-regex: >-
           (?s)(authorize|has_permission|check_access|assert_owner|require_owner|can_access)\s*\(
 
@@ -623,6 +680,17 @@ rules:
       - pattern: 'request.values'
       - pattern: 'request.data'
       - pattern: 'request.get_json(...)'
+      # Django's raw body, and the one this list was missing. `request.data`
+      # is Django REST Framework; a plain Django view reads `request.body` and
+      # parses it itself:
+      #
+      #     payload = json.loads(request.body or b"{}")
+      #     order = Order(**payload)
+      #
+      # which is the shape in fixtures/django-vulnerable. The sink was already
+      # here, so the rule had every part of this flow except where it starts.
+      - pattern: 'request.body'
+      - pattern: 'request.POST'
       # Starlette, and so FastAPI, names them differently.
       - pattern: 'request.query_params'
       # FastAPI's usual shape has no request object at all: the framework

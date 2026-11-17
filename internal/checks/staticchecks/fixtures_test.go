@@ -123,21 +123,35 @@ func TestRulePackFiresOnVulnerableFixtures(t *testing.T) {
 			},
 		},
 		{
-			// The fourth stack, and the thinnest static coverage of the four.
-			// That is the rules rather than the fixture: a Django view
-			// carries no route decorator, so every rule anchored on one --
-			// traversal and mass assignment among them -- cannot match a
-			// Django handler at all, and the IDOR rule's ownership-column
-			// filter is defeated by a response that serialises the owner id.
-			// The fixture's docstring records each one. All of those
-			// weaknesses are proven by the endpoint layer instead, which is
-			// what fixtures/django-vulnerable was written for.
+			// The fourth stack. It was written to give the endpoint layer a
+			// Django server to ask, and what it first measured was how
+			// little of the static pack reached one: four rules, where this
+			// list now has seven. Each of the three it gained was a defect
+			// in a rule, found only because a fixture asked:
+			//
+			//	idor.missing-ownership-check suppressed itself whenever a
+			//	handler serialised the record's owner into its response. One
+			//	ordinary line of correct code switched the pack's flagship
+			//	rule off, in all three of its language variants.
+			//
+			//	authz.mass-assignment had every part of the Django flow
+			//	except where it starts: request.data is Django REST
+			//	Framework, and a plain view reads request.body.
+			//
+			//	traversal.path-built-from-input was anchored on a route
+			//	decorator, which a Django view does not have.
+			//
+			// All three are pinned in rules/testdata/ with the Django shape
+			// beside the Flask and FastAPI ones.
 			fixture: "django-vulnerable",
 			wantRule: []string{
+				"authz.mass-assignment",
+				"idor.missing-ownership-check",
 				"injection.sql-string-built-from-input",
 				"misconfig.cors-credentialed-wildcard",
 				"misconfig.debug-mode-enabled",
 				"misconfig.wildcard-allowed-hosts",
+				"traversal.path-built-from-input",
 			},
 		},
 		{

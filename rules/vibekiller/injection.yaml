@@ -496,17 +496,56 @@ rules:
     # and meant "this function has a decorator", so the rule fired on any
     # decorated function that opened a non-literal path.
     #
-    # It also means this rule cannot cover Django, whose views carry no route
-    # decorator at all. fixtures/django-vulnerable records that: its traversal
-    # is proven by the endpoint layer and not by this rule.
+    # Two anchors, because there are two ways a Python function becomes a
+    # request handler. Flask and FastAPI decorate it. Django does not: urls.py
+    # binds the URL, sometimes several include() levels away, and the only
+    # thing the function itself says is that its first parameter is the
+    # request. For a while this rule had the decorator anchor alone, so it
+    # could not report a Django traversal at all -- the weakness in
+    # fixtures/django-vulnerable was proven by the endpoint layer against a
+    # running server while this rule said nothing about it.
     patterns:
-      - pattern-inside: |
-          @$APP.$ROUTE(...)
+      - pattern-either:
+          - patterns:
+              - pattern-inside: |
+                  @$APP.$ROUTE(...)
+                  def $VIEW(...):
+                      ...
+              - metavariable-regex:
+                  metavariable: $ROUTE
+                  regex: '^(route|get|post|put|patch|delete|head|options)$'
+          # A Django view. The first parameter has to actually be named
+          # `request`, which is the same discipline
+          # idor-missing-ownership-check-django uses: without it this anchor
+          # is "any function", and every helper that opens a computed path
+          # becomes a finding.
+          - patterns:
+              - pattern-inside: |
+                  def $VIEW($REQ, ...):
+                      ...
+              - metavariable-regex:
+                  metavariable: $REQ
+                  regex: '^request$'
+      # Resolving the path and confirming it is still under the intended root
+      # is precisely what this rule's guidance asks for, so a handler that
+      # does it is not a finding. For Flask that is send_from_directory,
+      # excluded below; written out, it is a resolve() followed by a
+      # containment check, which is the shape ../django-patched uses.
+      - pattern-not-inside: |
           def $VIEW(...):
               ...
-      - metavariable-regex:
-          metavariable: $ROUTE
-          regex: '^(route|get|post|put|patch|delete|head|options)$'
+              <... $P.is_relative_to(...) ...>
+              ...
+      - pattern-not-inside: |
+          def $VIEW(...):
+              ...
+              <... os.path.commonpath(...) ...>
+              ...
+      - pattern-not-inside: |
+          def $VIEW(...):
+              ...
+              <... os.path.commonprefix(...) ...>
+              ...
       - pattern-either:
           - pattern: 'open(os.path.join(...), ...)'
           - patterns:

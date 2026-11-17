@@ -7,27 +7,38 @@ This fixture exists because the dynamic layer had never run against Django.
 It does now: ten findings are reproduced against a live server here,
 including the access-control proof that reads userB's canary order as userA.
 
-Writing it also measured how much of the *static* pack reaches Django, and
-the answer is four rules -- cors-origin-reflected, debug-mode-enabled,
-sql-built-by-string-formatting and wildcard-allowed-hosts. Three weaknesses
-below are reported by nothing static, for reasons that are about the rules
-rather than about this file:
+It earned its keep twice, though, and the second time was the surprise.
+Running it also measured the *static* pack against Django, and the first
+answer was four rules out of the seven that fire today. The three it was
+missing were missing because of defects in the rules -- each one invisible
+until a fixture asked, because a silent rule and a satisfied rule produce
+exactly the same output:
 
-  traversal.path-built-from-input and authz.mass-assignment are both anchored
-  on a route decorator, `@$APP.$ROUTE(...)`. A Django view carries no route
-  decorator at all -- the URL is bound in urls.py -- so neither rule can
-  match one. Both weaknesses are real here, and the endpoint layer proves the
-  traversal.
+  idor.missing-ownership-check, the rule this project leads with, suppressed
+  itself whenever a handler serialised the record's owner into its response.
+  order_detail below returns "user_id", the exclusion looked for that name
+  anywhere in the view rather than in the query, and the flagship
+  access-control finding went quiet. One line of entirely ordinary correct
+  code, next to the bug, hid the bug -- and the more completely a handler
+  serialises its record, the likelier it was hidden. The defect was in all
+  three language variants, not just Django's.
 
-  idor.missing-ownership-check has a Django variant, and it is excluded by
-  its own ownership-column filter: order_detail returns "user_id" in its
-  response, and the filter looks for that column name anywhere in the
-  handler rather than in the query. Serialising a record's owner id is
-  entirely ordinary, so the filter is defeated by correct code next to the
-  bug. The weakness is proven dynamically instead.
+  authz.mass-assignment had every part of this flow except where it starts.
+  request.data is Django REST Framework; create_order below reads
+  request.body, which was not in the source list, so the taint never began
+  and a sink the rule already had was never reached.
+
+  traversal.path-built-from-input was anchored on a route decorator. A Django
+  view carries none -- urls.py binds the URL, sometimes several include()
+  levels away -- so the rule could not match a Django handler at all.
+
+All three are fixed, each pinned in rules/testdata/ with the Django shape
+beside the Flask and FastAPI ones, and all three weaknesses below are now
+reported statically as well as dynamically.
 
 Nothing here is written to make a rule fire or stay quiet. A fixture tuned
-to the rules measures the tuning.
+to the rules measures the tuning -- which is the whole reason these three
+were findable.
 """
 
 import json

@@ -34,6 +34,29 @@ app.get('/orders-scoped/:id', async (req, res) => {
   res.json(rows[0]);
 });
 
+// Serialising the record's owner into the response is not an ownership
+// check, and it used to read as one: the exclusion asked whether "user_id"
+// appeared anywhere in the handler, so this one line switched the rule off.
+// The query below is the same unscoped query as the first case.
+// ruleid: idor-missing-ownership-check-express
+app.get('/orders-serialised/:id', async (req, res) => {
+  const [rows] = await db.execute('SELECT * FROM orders WHERE id = ?', [req.params.id]);
+  res.json({ id: rows[0].id, user_id: rows[0].user_id, item: rows[0].item });
+});
+
+// Scoped, and the scoping is in the query rather than on req.user, because
+// this handler resolves the caller itself. The column is compared, so there
+// is nothing to report.
+// ok: idor-missing-ownership-check-express
+app.get('/orders-resolved/:id', async (req, res) => {
+  const callerId = await principalFor(req.headers.authorization);
+  const [rows] = await db.execute(
+    'SELECT item FROM orders WHERE id = ? AND user_id = ?',
+    [req.params.id, callerId],
+  );
+  res.json(rows[0]);
+});
+
 // A handler that reads the filesystem is serving a file, not a record, and
 // traversal.path-built-from-input owns that question.
 // ok: idor-missing-ownership-check-express

@@ -696,59 +696,75 @@ Django's route extraction against a server rather than against a parser —
 FastAPI's `APIRouter` prefix resolution included, which until now had only
 ever been read.
 
-Django is the leg with the most riding on it, and not because the extractor is
-newest. It is the stack the **static** pack covers least: four rules, against
-ten on Flask. That is a property of the rules rather than of Django. A Flask
-or FastAPI handler wears its route as a decorator, and a rule can anchor a
-pattern on one; a Django view wears nothing — the URL is bound in
-`urls.py`, often several `include()` levels away — so every rule anchored
-on a route decorator cannot match a Django handler at all. Two of this
-project's rules are, the traversal rule among them. A third,
-`idor.missing-ownership-check`, has a Django variant that this fixture defeats
-by accident: the filter suppressing it looks for an ownership column anywhere
-in the handler, and the handler serialises `user_id` into its response, which
-is entirely ordinary code sitting beside the bug.
+Django is the leg with the most riding on it, and it paid for itself twice.
+It was added so the endpoint layer would have a Django server to ask — that
+layer had never run against one. It did that, confirming ten findings. Then it
+measured the **static** pack against Django, and that is where it earned its
+keep: four rules fired where seven do today, and all three it was missing were
+missing because of defects in the rules rather than anything about Django.
 
-All three weaknesses are real in `fixtures/django-vulnerable` and all three
-are reported — by the endpoint layer, against a running server, with the
-traversal escape and the cross-user canary read among the ten confirmed. The
-fixture's docstring names each gap and its cause. Nothing in it was written to
-make a rule fire or stay quiet; a fixture tuned to the rules measures the
-tuning.
+A silent rule and a satisfied rule produce identical output, so none of the
+three was visible by reading. What made them visible was a running server
+confirming a weakness while the rule for that weakness said nothing.
 
-The last two lines are the runtime and exposure layers, and each had been
-worse off than merely untested. The runtime checks could not be reached at
-all: eligibility is decided before any check runs, the gate asks whether an
-observation has arrived, and an agent only reports once the application serves
-a request — so on an instance nobody was using they were skipped every time,
-however correctly the agent was installed. The exposure check needs two
-components and had never been given them; it spent every run timing out
-against a declared neighbour with nothing listening.
+- **`idor.missing-ownership-check`**, the rule this project leads with,
+  suppressed itself whenever a handler serialised the record's owner into its
+  response. The exclusion asked whether `user_id` appeared anywhere in the
+  handler; `return jsonify({"id": order.id, "user_id": order.user_id})`
+  satisfies that, so one line of entirely ordinary correct code, sitting
+  beside the bug, switched the rule off — and the more completely a handler
+  serialised its record, the likelier it was off. The defect was in all three
+  language variants. It now asks whether the owner is *assigned or compared*,
+  which is the question it meant.
+- **`authz.mass-assignment`** had every part of the Django flow except where
+  it starts. `request.data` is Django REST Framework; a plain view reads
+  `request.body`, which was not in the source list, so the taint never began
+  and a sink the rule already had was never reached.
+- **`traversal.path-built-from-input`** was anchored on a route decorator,
+  which a Django view does not have — `urls.py` binds the URL, sometimes
+  several `include()` levels away. It now carries a second anchor for a view
+  whose first parameter is the request, and an exclusion for the resolve-then-
+  confine shape that is the correct fix.
+
+All three are fixed and pinned in `rules/testdata/` with the Django shape
+beside the Flask and FastAPI ones. The four patched fixtures stayed at zero
+findings throughout, which is what says the widening did not become noise.
 
 Until these jobs existed, no test and no CI step had ever started a fixture.
 These were the parts of the tool with the most confident language in their
-output and the least evidence behind them, and starting the fixtures found
-six things no amount of reading them would have: `fastapi-vulnerable` pinned
-a dependency set pip cannot resolve and an application that cannot import;
-`fastapi-patched` had never set the security headers its Flask and Express
-twins set; `express-patched` had no committed lockfile, and since osv-scanner
-reads lockfiles rather than `package.json`, that half of the pair contributed
-nothing at all to the dependency layer in a clean clone; the SQL differential
-check spent its probe budget on the first route it saw; and
-`exposure.shared-trust-domain` treated `localhost:5000` as a neighbour of
-`127.0.0.1:5000`, reporting one process as two components on the
-configuration this README hands you; and a rule anchored on
-`@$APP.$ROUTE(...)` was anchored on nothing at all. That last one surfaced as
-a single false positive on `django-patched` and was the worst of the six.
-Semgrep resolves an imported name to its qualified form and treats a bare
-decorator as a call, so the anchor is satisfied by *any* imported decorator
-`$ROUTE` can bind to -- `@wraps` from `functools` among them. Six rules
-carried it, and each had looked like it was constrained to a route handler
-while in practice constraining nothing. All six now name the methods they
-accept, with `@lru_cache` pinned in `rules/testdata/` as the negative case.
-The rule-pack behaviour test drives real
-Semgrep and skips cleanly when it is not installed; the pack's structure is
-validated without it.
+output and the least evidence behind them. Starting the fixtures found seven
+things no amount of reading them would have:
+
+- `fastapi-vulnerable` pinned a dependency set pip cannot resolve, and an
+  application that cannot import on a current interpreter.
+- `fastapi-patched` had never set the security headers its Flask and Express
+  twins set.
+- `express-patched` had no committed lockfile. osv-scanner reads lockfiles
+  rather than `package.json`, so in a clean clone that half of the pair
+  contributed nothing at all to the dependency layer.
+- The SQL differential check spent its whole probe budget on the first route
+  it saw, depth-first.
+- `exposure.shared-trust-domain` treated `localhost:5000` as a neighbour of
+  `127.0.0.1:5000`, reporting one process as two components — on the
+  configuration this README hands you.
+- A rule anchored on `@$APP.$ROUTE(...)` was anchored on nothing at all.
+  Semgrep resolves an imported name to its qualified form and treats a bare
+  decorator as a call, so the anchor was satisfied by *any* imported
+  decorator `$ROUTE` could bind to, `@wraps` from `functools` among them. Six
+  rules carried it, each looking constrained to a route handler and
+  constraining nothing. It surfaced as one false positive on
+  `django-patched`. All six now name the methods they accept, with
+  `@lru_cache` pinned as the negative case.
+- `idor.missing-ownership-check` went silent on any handler that serialised
+  the record's owner, described above. This was the worst of the seven: the
+  others cost a false positive or a layer that measured nothing, while this
+  one made the pack's flagship rule quietly miss the weakness it exists to
+  find, in every language, with no output to suggest anything was wrong.
+
+Three of those seven are rules that looked alive and matched nothing, which is
+the failure mode a rule pack cannot self-report. The rule-pack behaviour test
+drives real Semgrep and skips cleanly when it is not installed; the pack's
+structure is validated without it.
 
 ---
 

@@ -152,6 +152,34 @@ def flask_banner():
         return fh.read()
 
 
+# A Django view, which carries no decorator at all -- urls.py binds the URL.
+# The decorator anchor alone could not see this, so a Django traversal was
+# reported by nothing static.
+def django_file(request, name):
+    # ruleid: path-built-from-request-value-python
+    with open(os.path.join(UPLOAD_ROOT, name), "rb") as fh:
+        return fh.read()
+
+
+# Resolve, then confirm the result is still under the root. This is what the
+# guidance asks for and the Django shape of send_from_directory.
+def django_file_safe(request, name):
+    candidate = (UPLOAD_ROOT / name).resolve()
+    if not candidate.is_relative_to(UPLOAD_ROOT) or not candidate.is_file():
+        return JsonResponse({"error": "not found"}, status=404)
+    # ok: path-built-from-request-value-python
+    with open(candidate, "rb") as fh:
+        return fh.read()
+
+
+# The first parameter has to be the request. Without that, this anchor is
+# "any function", and every helper that opens a computed path is a finding.
+def read_upload(name, mode="rb"):
+    # ok: path-built-from-request-value-python
+    with open(os.path.join(UPLOAD_ROOT, name), mode) as fh:
+        return fh.read()
+
+
 # --- nosql-query-built-from-request-object-python -------------------------
 
 
