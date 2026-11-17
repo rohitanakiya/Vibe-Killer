@@ -632,7 +632,7 @@ it is pattern-matching on the domain — so `fixtures/*-vulnerable` and
 `fixtures/*-patched` are the same application with and without each fix, and
 the suite asserts the pack is **completely silent** on the patched versions.
 
-Fixtures exist in three stacks -- Express, Flask and FastAPI -- so the
+Fixtures exist in four stacks -- Express, Flask, FastAPI and Django -- so the
 auto-detection and adapter path is itself under test, not just the checks. The
 FastAPI pair was added for a narrower reason: the Python adapter had always
 claimed FastAPI support, resolving `APIRouter(prefix=...)` through
@@ -674,6 +674,7 @@ it:
 flask     vulnerable  confirmed=8    patched  confirmed=0
 express   vulnerable  confirmed=6    patched  confirmed=0
 fastapi   vulnerable  confirmed=4    patched  confirmed=0
+django    vulnerable  confirmed=10   patched  confirmed=0
 
 flask     runtime     confirmed=10   (an agent attached, two observed findings)
 flask     exposure    confirmed=9    (two components, one trust domain)
@@ -688,12 +689,32 @@ may earn it against corrected code. A heuristic finding at `likely` is still
 allowed there and some appear — `/api/session` really does answer anonymous
 callers in the patched fixtures, by design.
 
-Running three stacks is not repetition. The endpoint checks are
+Running four stacks is not repetition. The endpoint checks are
 stack-agnostic: they probe HTTP. What differs per stack is the adapter handing
-them routes, so this is the only thing that tests Express's and FastAPI's
-route extraction against a server rather than against a parser — FastAPI's
-`APIRouter` prefix resolution included, which until now had only ever been
-read.
+them routes, so this is the only thing that tests Express's, FastAPI's and
+Django's route extraction against a server rather than against a parser —
+FastAPI's `APIRouter` prefix resolution included, which until now had only
+ever been read.
+
+Django is the leg with the most riding on it, and not because the extractor is
+newest. It is the stack the **static** pack covers least: four rules, against
+ten on Flask. That is a property of the rules rather than of Django. A Flask
+or FastAPI handler wears its route as a decorator, and a rule can anchor a
+pattern on one; a Django view wears nothing — the URL is bound in
+`urls.py`, often several `include()` levels away — so every rule anchored
+on a route decorator cannot match a Django handler at all. Two of this
+project's rules are, the traversal rule among them. A third,
+`idor.missing-ownership-check`, has a Django variant that this fixture defeats
+by accident: the filter suppressing it looks for an ownership column anywhere
+in the handler, and the handler serialises `user_id` into its response, which
+is entirely ordinary code sitting beside the bug.
+
+All three weaknesses are real in `fixtures/django-vulnerable` and all three
+are reported — by the endpoint layer, against a running server, with the
+traversal escape and the cross-user canary read among the ten confirmed. The
+fixture's docstring names each gap and its cause. Nothing in it was written to
+make a rule fire or stay quiet; a fixture tuned to the rules measures the
+tuning.
 
 The last two lines are the runtime and exposure layers, and each had been
 worse off than merely untested. The runtime checks could not be reached at
@@ -707,7 +728,7 @@ against a declared neighbour with nothing listening.
 Until these jobs existed, no test and no CI step had ever started a fixture.
 These were the parts of the tool with the most confident language in their
 output and the least evidence behind them, and starting the fixtures found
-five things no amount of reading them would have: `fastapi-vulnerable` pinned
+six things no amount of reading them would have: `fastapi-vulnerable` pinned
 a dependency set pip cannot resolve and an application that cannot import;
 `fastapi-patched` had never set the security headers its Flask and Express
 twins set; `express-patched` had no committed lockfile, and since osv-scanner
@@ -716,7 +737,16 @@ nothing at all to the dependency layer in a clean clone; the SQL differential
 check spent its probe budget on the first route it saw; and
 `exposure.shared-trust-domain` treated `localhost:5000` as a neighbour of
 `127.0.0.1:5000`, reporting one process as two components on the
-configuration this README hands you. The rule-pack behaviour test drives real
+configuration this README hands you; and a rule anchored on
+`@$APP.$ROUTE(...)` was anchored on nothing at all. That last one surfaced as
+a single false positive on `django-patched` and was the worst of the six.
+Semgrep resolves an imported name to its qualified form and treats a bare
+decorator as a call, so the anchor is satisfied by *any* imported decorator
+`$ROUTE` can bind to -- `@wraps` from `functools` among them. Six rules
+carried it, and each had looked like it was constrained to a route handler
+while in practice constraining nothing. All six now name the methods they
+accept, with `@lru_cache` pinned in `rules/testdata/` as the negative case.
+The rule-pack behaviour test drives real
 Semgrep and skips cleanly when it is not installed; the pack's structure is
 validated without it.
 

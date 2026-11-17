@@ -293,15 +293,21 @@ jobs:
     # authorized_targets, which is the list the scope guard enforces.
     permissions:
       contents: read
-    # One leg per stack rather than one job running all three. The endpoint
+    # One leg per stack rather than one job running all four. The endpoint
     # checks are stack-agnostic by design -- they probe HTTP -- so what each
     # leg actually tests is a different adapter handing them routes, and a
     # failure should name the stack it belongs to. fail-fast off for the same
     # reason: if Express breaks, the FastAPI result is still worth having.
+    #
+    # Django is the leg that matters most per route. Its extractor reads a
+    # URLconf tree rather than decorators, which is a different mechanism from
+    # every other adapter here, and it is also the stack the static pack
+    # covers least -- four rules, because a Django view carries no decorator
+    # for a rule to anchor on. What reaches a Django weakness is this job.
     strategy:
       fail-fast: false
       matrix:
-        stack: [flask, express, fastapi]
+        stack: [flask, express, fastapi, django]
     steps:
       - uses: actions/checkout@v7
 

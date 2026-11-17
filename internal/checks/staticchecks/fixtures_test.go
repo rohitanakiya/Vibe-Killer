@@ -123,6 +123,24 @@ func TestRulePackFiresOnVulnerableFixtures(t *testing.T) {
 			},
 		},
 		{
+			// The fourth stack, and the thinnest static coverage of the four.
+			// That is the rules rather than the fixture: a Django view
+			// carries no route decorator, so every rule anchored on one --
+			// traversal and mass assignment among them -- cannot match a
+			// Django handler at all, and the IDOR rule's ownership-column
+			// filter is defeated by a response that serialises the owner id.
+			// The fixture's docstring records each one. All of those
+			// weaknesses are proven by the endpoint layer instead, which is
+			// what fixtures/django-vulnerable was written for.
+			fixture: "django-vulnerable",
+			wantRule: []string{
+				"injection.sql-string-built-from-input",
+				"misconfig.cors-credentialed-wildcard",
+				"misconfig.debug-mode-enabled",
+				"misconfig.wildcard-allowed-hosts",
+			},
+		},
+		{
 			// The third stack, and the one that measures whether a rule is
 			// written for Python or only for Flask.
 			//
@@ -219,7 +237,9 @@ func TestRulePackFiresOnVulnerableFixtures(t *testing.T) {
 func TestRulePackIsSilentOnPatchedFixtures(t *testing.T) {
 	requireSemgrep(t)
 
-	for _, fixture := range []string{"flask-patched", "express-patched", "fastapi-patched"} {
+	for _, fixture := range []string{
+		"flask-patched", "express-patched", "fastapi-patched", "django-patched",
+	} {
 		t.Run(fixture, func(t *testing.T) {
 			fs := runSemgrep(t, fixture)
 			if len(fs) == 0 {
@@ -239,7 +259,9 @@ func TestRulePackIsSilentOnPatchedFixtures(t *testing.T) {
 func TestStaticFindingsNeverClaimConfirmed(t *testing.T) {
 	requireSemgrep(t)
 
-	for _, fixture := range []string{"flask-vulnerable", "express-vulnerable", "fastapi-vulnerable"} {
+	for _, fixture := range []string{
+		"flask-vulnerable", "express-vulnerable", "fastapi-vulnerable", "django-vulnerable",
+	} {
 		for _, f := range runSemgrep(t, fixture) {
 			if f.Confidence == finding.ConfidenceConfirmed {
 				t.Errorf("%s (%s) claims confirmed confidence from a static scan", f.RuleID, fixture)
@@ -253,7 +275,9 @@ func TestStaticFindingsNeverClaimConfirmed(t *testing.T) {
 func TestSecretFindingsRequireAHuman(t *testing.T) {
 	requireSemgrep(t)
 
-	for _, fixture := range []string{"flask-vulnerable", "express-vulnerable", "fastapi-vulnerable"} {
+	for _, fixture := range []string{
+		"flask-vulnerable", "express-vulnerable", "fastapi-vulnerable", "django-vulnerable",
+	} {
 		for _, f := range runSemgrep(t, fixture) {
 			if f.Category != finding.CategorySecretsExposure {
 				continue

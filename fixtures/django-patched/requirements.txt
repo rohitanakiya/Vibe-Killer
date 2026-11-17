@@ -1,0 +1,10 @@
+# The django-vulnerable fixture's dependencies, pinned to the version that was
+# current when this fixture was written.
+#
+# Not a claim that the dependency check finds nothing here: advisories keep
+# being published against versions that were clean when they were pinned, so a
+# patched fixture drifts into having dependency findings without anything
+# changing in the repository. What the suite asserts about the patched
+# fixtures is that the *rule pack* is silent on them, which is a claim about
+# this project's own rules.
+Django==5.1.4

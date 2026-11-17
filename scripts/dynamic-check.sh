@@ -40,9 +40,9 @@ STACK="${1:-}"
 MODE="${2:-}"
 
 case "$STACK" in
-flask | express | fastapi) ;;
+flask | express | fastapi | django) ;;
 *)
-    echo "usage: $0 <flask|express|fastapi> <vulnerable|patched>" >&2
+    echo "usage: $0 <flask|express|fastapi|django> <vulnerable|patched|runtime|exposure>" >&2
     exit 2
     ;;
 esac
@@ -149,8 +149,9 @@ export PORT
 
 # --- install and start ------------------------------------------------------
 
-start_python_fixture() {
-    local entry="$1" # the python expression that serves the app
+# make_python_venv creates a virtualenv for $APP_DIR and installs its pinned
+# requirements, leaving the interpreter path in PY.
+make_python_venv() {
 
     # PYTHON overrides the interpreter, and the vulnerable Flask fixture is why
     # it exists. Its pins are deliberately old so the dependency check finds
@@ -158,7 +159,7 @@ start_python_fixture() {
     # removed after 3.12 -- so that fixture cannot be served by an arbitrary
     # interpreter. CI pins 3.12 for this job; locally, pass
     # PYTHON=/path/to/python3.12.
-    local bootstrap="${PYTHON:-python3}"
+    bootstrap="${PYTHON:-python3}"
     BOOTSTRAP_PY_USED="$bootstrap"
 
     echo "==> creating a virtualenv for $FIXTURE ($("$bootstrap" --version 2>&1))"
@@ -167,16 +168,23 @@ start_python_fixture() {
     # Flask 2.0.1 and flask-patched pins 3.1.0, and installing both into one
     # environment would mean testing neither.
     "$bootstrap" -m venv "$WORK/venv"
-    local py="$WORK/venv/bin/python"
+    py="$WORK/venv/bin/python"
     [ -x "$py" ] || py="$WORK/venv/Scripts/python.exe"
 
     "$py" -m pip install --quiet --disable-pip-version-check --upgrade pip
     "$py" -m pip install --quiet --disable-pip-version-check -r "$APP_DIR/requirements.txt"
+    PY="$py"
+}
+
+# start_python_fixture serves the app with a python expression.
+start_python_fixture() {
+    local entry="$1"
+    make_python_venv
 
     echo "==> starting $APP_DIR on $TARGET"
     (
         cd "$APP_DIR"
-        exec "$py" -c "$entry"
+        exec "$PY" -c "$entry"
     ) >"$WORK/app.log" 2>&1 &
     APP_PID=$!
 }
@@ -195,6 +203,39 @@ flask)
     ;;
 fastapi)
     start_python_fixture "import uvicorn; from main import app; uvicorn.run(app, host='127.0.0.1', port=$PORT, log_level='warning')"
+    ;;
+django)
+    # Django needs its schema before it can serve anything, and the canary
+    # records the access-control checks read have to be in it. A management
+    # command seeds them rather than a fixture file, which is how a Django
+    # project would do it, and --run-syncdb creates the tables for an app with
+    # no migrations directory.
+    make_python_venv
+
+    export DJANGO_SECRET_KEY="dynamic-check-only-not-a-secret"
+    export FIXTURE_DB="$WORK/fixture.sqlite3"
+
+    echo "==> migrating and seeding $APP_DIR"
+    (cd "$APP_DIR" && "$PY" manage.py migrate --run-syncdb --no-input >"$WORK/migrate.log" 2>&1) || {
+        echo "migrate failed:" >&2
+        tail -20 "$WORK/migrate.log" >&2
+        exit 1
+    }
+    (cd "$APP_DIR" && "$PY" manage.py seed_fixtures >>"$WORK/migrate.log" 2>&1) || {
+        echo "seeding failed:" >&2
+        tail -20 "$WORK/migrate.log" >&2
+        exit 1
+    }
+    tail -1 "$WORK/migrate.log"
+
+    # --noreload because the autoreloader forks, and a fixture that outlives
+    # the script is a port left bound for whatever runs next.
+    echo "==> starting $APP_DIR on $TARGET"
+    (
+        cd "$APP_DIR"
+        exec "$PY" manage.py runserver "127.0.0.1:$PORT" --noreload
+    ) >"$WORK/app.log" 2>&1 &
+    APP_PID=$!
     ;;
 express)
     echo "==> installing $APP_DIR (node $(node --version))"
@@ -385,6 +426,25 @@ EXPECTED = {
         "authz.unprotected-endpoint",
         "idor.sequential-id-access",
         "misconfig.missing-security-headers",
+    },
+    # The widest of the four, because the fixture was written last and carries
+    # every weakness the endpoint layer can prove.
+    #
+    # Three of these are the only thing that reaches their weakness at all.
+    # A Django view carries no route decorator, so the traversal and mass
+    # assignment rules -- both anchored on one -- cannot match a Django
+    # handler, and the IDOR rule's ownership-column filter is defeated by a
+    # response that serialises the owner id. The fixture's docstring records
+    # each one. Static coverage of this stack is four rules; this list is what
+    # makes the rest of it provable.
+    "django": {
+        "authz.unprotected-endpoint",
+        "idor.sequential-id-access",
+        "injection.sql-differential",
+        "misconfig.cors-reflection",
+        "misconfig.missing-security-headers",
+        "misconfig.verbose-error",
+        "traversal.path-escape",
     },
 }
 

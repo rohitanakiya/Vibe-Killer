@@ -1,0 +1,6 @@
+# Deliberately vulnerable Django fixture for Vibe Killer's test suite.
+# The pinned version is old on purpose: the dependency check should find
+# published advisories for it. 4.2.7 is also the oldest 4.2 that imports on
+# Python 3.12, which the dynamic job pins -- the same constraint the Flask
+# fixture's Werkzeug pin imposes from the other direction.
+Django==4.2.7

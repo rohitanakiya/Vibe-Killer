@@ -40,6 +40,8 @@ func TestDetectionIsStackAgnostic(t *testing.T) {
 		{"flask-patched", "python", "python", "flask"},
 		{"fastapi-vulnerable", "python", "python", "fastapi"},
 		{"fastapi-patched", "python", "python", "fastapi"},
+		{"django-vulnerable", "python", "python", "django"},
+		{"django-patched", "python", "python", "django"},
 	}
 
 	for _, tc := range tests {
