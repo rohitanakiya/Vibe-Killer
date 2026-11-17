@@ -226,6 +226,21 @@ func matchesAny(rel string, patterns []string) bool {
 		if ok, err := filepath.Match(p, filepath.Base(rel)); err == nil && ok {
 			return true
 		}
+
+		// A pattern with no slash matches a path component at any depth,
+		// which is what Semgrep does with the same value and what this did
+		// not. One exclude list is read by both -- the operator writes it
+		// once in vibekiller.config.yaml -- and a bare "testdata" excluding
+		// a directory for the static engine while the adapter walked into it
+		// meant the surface and the findings disagreed about what was in
+		// scope, from one line of config.
+		if !strings.Contains(p, "/") {
+			for _, seg := range strings.Split(rel, "/") {
+				if ok, err := filepath.Match(p, seg); err == nil && ok {
+					return true
+				}
+			}
+		}
 	}
 	return false
 }

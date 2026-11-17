@@ -198,15 +198,12 @@ fastapi)
     ;;
 express)
     echo "==> installing $APP_DIR (node $(node --version))"
-    # npm ci where a lockfile is committed, because then the transitive pins
-    # are fixed and are what the dependency check reads. express-vulnerable
-    # has one; express-patched does not, so its transitive versions resolve
-    # fresh and npm ci refuses to run at all.
-    if [ -f "$APP_DIR/package-lock.json" ]; then
-        (cd "$APP_DIR" && npm ci --no-audit --no-fund >/dev/null)
-    else
-        (cd "$APP_DIR" && npm install --no-audit --no-fund >/dev/null)
-    fi
+    # npm ci, which needs a committed lockfile and both express fixtures now
+    # have one. That matters beyond reproducible installs: osv-scanner reads
+    # the lockfile and cannot read a package.json, so the fixture without one
+    # contributed nothing at all to the dependency layer -- the pair was not
+    # being compared on the same basis.
+    (cd "$APP_DIR" && npm ci --no-audit --no-fund >/dev/null)
 
     echo "==> starting $APP_DIR on $TARGET"
     (

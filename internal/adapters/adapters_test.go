@@ -482,3 +482,41 @@ func TestPythonRouteEnumerationHandlesFastAPIRouters(t *testing.T) {
 		t.Errorf("path %q was mangled by normalization", order.Path)
 	}
 }
+
+// One exclude list is read by two things, so one value has to mean one thing.
+//
+// The operator writes exclude: once in vibekiller.config.yaml. Semgrep treats
+// a slash-free pattern as a path component at any depth; this walker treated
+// it as a whole-path or basename glob only, so a bare "testdata" excluded a
+// directory from the static engine while the adapter walked straight into it,
+// and the surface and the findings disagreed about what was in scope from one
+// line of config.
+func TestExcludePatternsMatchAComponentAtAnyDepth(t *testing.T) {
+	cases := []struct {
+		rel     string
+		pattern string
+		want    bool
+	}{
+		// The case that was wrong: a component in the middle of the path.
+		{"internal/adapters/testdata/django-project/manage.py", "testdata", true},
+		{"a/b/node_modules/c/d.js", "node_modules", true},
+
+		// The spellings that already worked.
+		{"testdata/x.py", "testdata", true},
+		{"runs/2026/findings.json", "runs/**", true},
+		{"vibekiller.exe", "vibekiller.exe", true},
+		{"src/app.min.js", "*.min.js", true},
+
+		// And it must not over-match: a component is a whole segment, not a
+		// substring of one.
+		{"internal/testdata_helpers/x.py", "testdata", false},
+		{"src/app.js", "testdata", false},
+		{"fixtures/flask-vulnerable/app.py", "node_modules", false},
+	}
+
+	for _, tc := range cases {
+		if got := matchesAny(tc.rel, []string{tc.pattern}); got != tc.want {
+			t.Errorf("matchesAny(%q, [%q]) = %v, want %v", tc.rel, tc.pattern, got, tc.want)
+		}
+	}
+}
