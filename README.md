@@ -237,9 +237,21 @@ adapter, never a core change. The Node and Python adapters are implemented;
 generic checks (dependencies, secrets, headers, CORS) run stack-independently.
 
 Route extraction is where that interface is most and least complete. Express,
-Flask, FastAPI and Django have real extractors. Next.js is recognized by name
--- from the `next` dependency -- but nothing reads `app/api` yet, so it maps
-zero routes.
+Flask, FastAPI, Django, fastify, koa and NestJS have real extractors, each
+with a fixture that pins what it produces. Next.js is recognized by name --
+from the `next` dependency -- but nothing reads `app/api` yet, so it maps zero
+routes.
+
+Three of those were "implemented" for a long time without being right, and
+they failed the same way Django did: the thing that decides a route's path
+lives somewhere other than the declaration. NestJS puts it in
+`@Controller('orders')`, koa in `new Router({ prefix })`, and fastify's object
+form promises no key order, so a regex requiring `method` before `url` missed
+every route written the other way round. Against the fixture they now share,
+the adapter used to report nine routes of which **seven were paths no server
+serves** -- and a route reported at the wrong path is worse than a missing
+one, because the endpoint checks probe it, get a 404, and report nothing,
+which reads exactly like an application with nothing wrong.
 
 Django needed a different shape from the others, and it is worth knowing why
 before trusting any of this on a Django codebase. Flask and FastAPI put the

@@ -132,10 +132,6 @@ var (
 	nodeMountRe = regexp.MustCompile(
 		`\b([A-Za-z_$][\w$]*)\s*\.\s*use\s*\(\s*(['"` + "`" + `])(/[^'"` + "`" + `]*)['"` + "`" + `]\s*,\s*([A-Za-z_$][\w$]*)`)
 
-	// fastify.route({ method: 'GET', url: '/x' })
-	nodeFastifyRe = regexp.MustCompile(
-		`(?is)method\s*:\s*['"]([A-Z]+)['"].*?url\s*:\s*['"]([^'"]+)['"]`)
-
 	// NestJS decorators: @Get(':id')
 	nodeNestRe = regexp.MustCompile(
 		`@(Get|Post|Put|Patch|Delete|Options|Head)\s*\(\s*(?:['"]([^'"]*)['"])?\s*\)`)
@@ -160,8 +156,14 @@ func (n *Node) EnumerateRoutes(ctx context.Context, repoRoot string, exclude []s
 	// across files needs module resolution, so the adapter applies prefixes
 	// found in the same file and records the limitation rather than guessing.
 	err := WalkSource(ctx, repoRoot, nodeExts, exclude, func(f SourceFile) error {
-		prefixes := map[string]string{}
-		for _, m := range nodeMountRe.FindAllStringSubmatch(strings.Join(f.Lines, "\n"), -1) {
+		whole := strings.Join(f.Lines, "\n")
+
+		// Construction-time prefixes first -- koa routers carry theirs there
+		// rather than taking one at use() time -- then mount-time ones, which
+		// override: where a router declares a prefix and is also mounted under
+		// a path, the mount is where it is actually served.
+		prefixes := nodeRouterPrefixes(whole)
+		for _, m := range nodeMountRe.FindAllStringSubmatch(whole, -1) {
 			routerVar, prefix := m[4], m[3]
 			prefixes[routerVar] = prefix
 		}
@@ -206,37 +208,15 @@ func (n *Node) EnumerateRoutes(ctx context.Context, repoRoot string, exclude []s
 				})
 			}
 
-			for _, m := range nodeNestRe.FindAllStringSubmatch(line, -1) {
-				method := strings.ToUpper(m[1])
-				path, params := NormalizePathTemplate(m[2])
-				if path == "" {
-					path = "/"
-				}
-				routes = append(routes, surface.Route{
-					Method:     method,
-					Path:       path,
-					PathParams: params,
-					File:       f.Path,
-					Line:       lineNo,
-					Mutating:   surface.IsMutating(method),
-				})
-			}
 		}
 
-		// Fastify's object form spans lines, so it is matched over the whole
-		// file rather than line by line.
-		whole := strings.Join(f.Lines, "\n")
-		for _, m := range nodeFastifyRe.FindAllStringSubmatch(whole, -1) {
-			method := strings.ToUpper(m[1])
-			path, params := NormalizePathTemplate(m[2])
-			if path == "" {
-				continue
-			}
-			routes = append(routes, surface.Route{
-				Method: method, Path: path, PathParams: params,
-				File: f.Path, Mutating: surface.IsMutating(method),
-			})
-		}
+		// NestJS and fastify object routes are handled in
+		// node_frameworks.go. Neither can be read a line at a time: a NestJS
+		// route's path is the controller's prefix joined with the decorator's
+		// argument, and a fastify route object spans lines and promises no
+		// key order.
+		routes = append(routes, nodeNestRoutes(f)...)
+		routes = append(routes, nodeFastifyObjectRoutes(f)...)
 
 		return nil
 	})

@@ -1,0 +1,12 @@
+{
+  "name": "vk-testdata-node-frameworks",
+  "private": true,
+  "description": "Route-extraction fixture for the Node frameworks the adapter claims beyond Express. Not an application; it exists to be parsed.",
+  "dependencies": {
+    "fastify": "4.26.0",
+    "koa": "2.15.0",
+    "@koa/router": "12.0.1",
+    "@nestjs/core": "10.3.0",
+    "@nestjs/common": "10.3.0"
+  }
+}
