@@ -1,6 +1,9 @@
 # Vibe Killer
 
 [![CI](https://github.com/rohitanakiya/Vibe-Killer/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/rohitanakiya/Vibe-Killer/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/rohitanakiya/Vibe-Killer?sort=semver)](https://github.com/rohitanakiya/Vibe-Killer/releases/latest)
+[![Go Reference](https://pkg.go.dev/badge/github.com/rohitanakiya/Vibe-Killer.svg)](https://pkg.go.dev/github.com/rohitanakiya/Vibe-Killer)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
 A self-hosted security scanner for applications you own. It reads your
 repository and, optionally, exercises a running instance of the same
@@ -513,14 +516,14 @@ permissions:
 
 steps:
   - uses: actions/checkout@v7
-  - uses: rohitanakiya/Vibe-Killer@v0.2.0
+  - uses: rohitanakiya/Vibe-Killer@v1.0.0
     with:
       static-only: true
 ```
 
 `action.yml` in this repository installs the pinned version, installs the
 wrapped scanners, runs the scan, uploads the SARIF and attaches the whole run
-directory as an artifact. It ships from v0.2.0 onward, so pin a tag at or
+directory as an artifact. It ships from v1.0.0 onward, so pin a tag at or
 above that rather than a branch. Its defaults are the safe ones: repository only, no
 network, no target. Setting `target` additionally requires
 `i-own-this-target: true`, and the host must still be in `authorized_targets`
@@ -781,6 +784,23 @@ structure is validated without it.
   specific issues. A clean run means the checks that ran found nothing, not
   that nothing is there — which is why the report lists what it could not check
   as prominently as what it found.
+
+---
+
+## Reporting a security issue
+
+Through GitHub's [Report a vulnerability][advisory] form, which opens a draft
+advisory visible only to you and the maintainer. [SECURITY.md](SECURITY.md)
+says what counts as a vulnerability in the scanner itself and what does not --
+a false positive is a bug worth an issue, and the fixtures under `fixtures/`
+are broken on purpose, advisories on their pinned dependencies included.
+
+[advisory]: https://github.com/rohitanakiya/Vibe-Killer/security/advisories/new
+
+Release notes are on the [releases page][releases], indexed in
+[CHANGELOG.md](CHANGELOG.md).
+
+[releases]: https://github.com/rohitanakiya/Vibe-Killer/releases
 
 ---
 

@@ -24,7 +24,7 @@ inputs:
   version:
     description: >
       Version of Vibe Killer to install, as a Go module version such as
-      v0.2.0, or "latest". Pin this: "latest" means a new release can change
+      v1.0.0, or "latest". Pin this: "latest" means a new release can change
       your results without a commit on your side.
     required: false
     default: latest
