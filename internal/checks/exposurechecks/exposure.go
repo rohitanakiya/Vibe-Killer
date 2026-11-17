@@ -177,6 +177,7 @@ func originOf(raw string) (string, error) {
 	if host == "" {
 		return "", fmt.Errorf("%q names no host", raw)
 	}
+	host = canonicalLoopback(host)
 	port := u.Port()
 	if port == "" {
 		if strings.EqualFold(u.Scheme, "https") {
@@ -186,6 +187,33 @@ func originOf(raw string) (string, error) {
 		}
 	}
 	return strings.ToLower(u.Scheme) + "://" + host + ":" + port, nil
+}
+
+// canonicalLoopback collapses the names for this machine onto one, so that a
+// single listener declared under two of them is one component rather than two.
+//
+// This is a correctness fix rather than tidiness. The shipped example config
+// declares both http://127.0.0.1:5000 and http://localhost:5000, and with the
+// hostnames compared literally the second was a neighbour of the first -- so
+// exposure.shared-trust-domain reported that a token minted for one component
+// was accepted by another, about one process reached by its other name. The
+// bug was latent only because no fixture had an endpoint the check could get
+// past its anonymous baseline on; adding one surfaced it immediately.
+//
+// A port still distinguishes two services on one machine, which is what it is
+// for. What a hostname cannot distinguish is a listener from itself.
+func canonicalLoopback(host string) string {
+	switch host {
+	case "localhost", "::1", "0.0.0.0", "[::1]":
+		return "127.0.0.1"
+	}
+	if strings.HasPrefix(host, "127.") {
+		return "127.0.0.1"
+	}
+	if strings.HasSuffix(host, ".localhost") {
+		return "127.0.0.1"
+	}
+	return host
 }
 
 func dedupe(in []string) []string {

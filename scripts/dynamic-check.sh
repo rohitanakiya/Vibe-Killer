@@ -57,6 +57,15 @@ runtime)
         exit 2
     fi
     ;;
+exposure)
+    # Two components, which is what the exposure layer needs and what no
+    # earlier run gave it: in every scan so far it probed a declared
+    # neighbour with nothing listening, timed out, and reported nothing.
+    if [ "$STACK" != "flask" ]; then
+        echo "exposure mode is only wired up for flask" >&2
+        exit 2
+    fi
+    ;;
 *)
     echo "usage: $0 <flask|express|fastapi> <vulnerable|patched|runtime>" >&2
     exit 2
@@ -69,9 +78,9 @@ cd "$REPO_ROOT"
 # runtime scans the vulnerable fixture; the mode names what is being proven,
 # not a separate application.
 FIXTURE_MODE="$MODE"
-if [ "$MODE" = "runtime" ]; then
-    FIXTURE_MODE="vulnerable"
-fi
+case "$MODE" in
+runtime | exposure) FIXTURE_MODE="vulnerable" ;;
+esac
 FIXTURE="fixtures/$STACK-$FIXTURE_MODE"
 if [ ! -d "$FIXTURE" ]; then
     echo "no such fixture: $FIXTURE" >&2
@@ -92,6 +101,7 @@ SINK_PORT="${SINK_PORT:-18080}"
 
 WORK="$(mktemp -d)"
 APP_PID=""
+NEIGHBOUR_PID=""
 
 # Where the application is served from, and what the scan is pointed at. Both
 # are the fixture itself except in runtime mode, which works on a copy: the
@@ -102,10 +112,12 @@ APP_DIR="$FIXTURE"
 SCAN_REPO="$FIXTURE"
 
 cleanup() {
-    if [ -n "$APP_PID" ] && kill -0 "$APP_PID" 2>/dev/null; then
-        kill "$APP_PID" 2>/dev/null || true
-        wait "$APP_PID" 2>/dev/null || true
-    fi
+    for pid in "$APP_PID" "$NEIGHBOUR_PID"; do
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+        fi
+    done
     rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -147,6 +159,7 @@ start_python_fixture() {
     # interpreter. CI pins 3.12 for this job; locally, pass
     # PYTHON=/path/to/python3.12.
     local bootstrap="${PYTHON:-python3}"
+    BOOTSTRAP_PY_USED="$bootstrap"
 
     echo "==> creating a virtualenv for $FIXTURE ($("$bootstrap" --version 2>&1))"
 
@@ -234,6 +247,55 @@ if [ -z "$ready" ]; then
     exit 1
 fi
 echo "    up after $((WAITED / 2))s"
+
+# --- the second component, for the exposure layer --------------------------
+#
+# exposure.shared-trust-domain asks whether a credential minted for one
+# declared component is accepted by another, and it needs two to ask. Every
+# earlier run declared a neighbour on 3000, found nothing listening, timed out
+# and reported nothing -- the layer ran and could not have found anything.
+#
+# The neighbour here is flask-patched beside flask-vulnerable: two builds of
+# one service, both validating the same bearer tokens, which is the shape the
+# weakness actually takes. It is not a contrived pair -- a token minted for the
+# public API working against the internal one is the finding.
+if [ "$MODE" = "exposure" ]; then
+    NEIGHBOUR_FIXTURE="fixtures/$STACK-patched"
+    NEIGHBOUR_PORT="${NEIGHBOUR_PORT:-3000}"
+
+    echo "==> starting $NEIGHBOUR_FIXTURE on 127.0.0.1:$NEIGHBOUR_PORT as the neighbour"
+    "$BOOTSTRAP_PY_USED" -m venv "$WORK/venv-neighbour"
+    NPY="$WORK/venv-neighbour/bin/python"
+    [ -x "$NPY" ] || NPY="$WORK/venv-neighbour/Scripts/python.exe"
+    "$NPY" -m pip install --quiet --disable-pip-version-check --upgrade pip
+    "$NPY" -m pip install --quiet --disable-pip-version-check -r "$NEIGHBOUR_FIXTURE/requirements.txt"
+
+    (
+        cd "$NEIGHBOUR_FIXTURE"
+        exec "$NPY" -c "from app import app; app.run(host='127.0.0.1', port=$NEIGHBOUR_PORT, debug=False, use_reloader=False)"
+    ) >"$WORK/neighbour.log" 2>&1 &
+    NEIGHBOUR_PID=$!
+
+    nready=""
+    for _ in $(seq 1 120); do
+        if [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "http://127.0.0.1:$NEIGHBOUR_PORT/health" || true)" = "200" ]; then
+            nready="yes"
+            break
+        fi
+        if ! kill -0 "$NEIGHBOUR_PID" 2>/dev/null; then
+            echo "the neighbour exited before it served anything:" >&2
+            cat "$WORK/neighbour.log" >&2
+            exit 1
+        fi
+        sleep 0.5
+    done
+    if [ -z "$nready" ]; then
+        echo "the neighbour never answered:" >&2
+        cat "$WORK/neighbour.log" >&2
+        exit 1
+    fi
+    echo "    neighbour up"
+fi
 
 # --- scan it ----------------------------------------------------------------
 #
@@ -336,7 +398,31 @@ problems = []
 for f in failed:
     problems.append("check %s failed: %s" % (f.get("check_id"), f.get("error")))
 
-if mode == "runtime":
+if mode == "exposure":
+    # The exposure layer, which needed two components and had never been given
+    # them: every earlier run declared a neighbour with nothing listening,
+    # timed out against it and reported nothing.
+    skipped_ids = {s.get("check_id") for s in (doc.get("skipped") or [])}
+    if "exposure.shared-trust-domain" in skipped_ids:
+        problems.append("exposure.shared-trust-domain was skipped")
+
+    exposure = [f for f in findings if f["rule_id"] == "exposure.shared-trust-domain"]
+    if not exposure:
+        problems.append("exposure.shared-trust-domain produced no finding against two components")
+
+    # The finding has to name the neighbour it reached, and must not have
+    # reached anything else: the scope is fixed from authorized_targets before
+    # a single request is sent, and the whole layer is only defensible because
+    # of that.
+    for f in exposure:
+        blob = json.dumps(f)
+        if "3000" not in blob:
+            problems.append("the exposure finding does not name the neighbour it probed")
+        for stranger in ("example.com", "169.254.169.254", "metadata"):
+            if stranger in blob:
+                problems.append("the exposure finding mentions %s, which nothing declared" % stranger)
+
+elif mode == "runtime":
     # The runtime layer, which until this existed had never run against an
     # application at all. Its two checks are what an outside observer cannot
     # determine: whether the authorization a route declares actually executed,

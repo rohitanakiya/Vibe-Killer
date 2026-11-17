@@ -356,3 +356,13 @@ jobs:
       - name: Observe ${{ matrix.stack }} at runtime
         if: matrix.stack == 'flask'
         run: bash scripts/dynamic-check.sh ${{ matrix.stack }} runtime
+
+      # The exposure layer, which needs two components and had never been
+      # given them: every earlier run declared a neighbour on 3000, found
+      # nothing listening, timed out against it and reported nothing. This
+      # starts the patched fixture beside the vulnerable one -- two builds of
+      # a service, both validating the same bearer tokens, which is the shape
+      # the weakness takes.
+      - name: Compare two ${{ matrix.stack }} components
+        if: matrix.stack == 'flask'
+        run: bash scripts/dynamic-check.sh ${{ matrix.stack }} exposure

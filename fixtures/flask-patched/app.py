@@ -93,6 +93,15 @@ def handle_error(err):
 def health():
     return jsonify({"ok": True})
 
+# The same "who am I" endpoint as its vulnerable twin, and the reason it exists
+# is the same: exposure.shared-trust-domain needs an endpoint on a neighbour
+# that refuses an anonymous request before it can ask whether the other
+# component's token is accepted.
+@app.route("/api/me", methods=["GET"])
+@require_auth
+def whoami():
+    return jsonify({"id": g.user["id"], "name": g.user["name"], "role": g.user["role"]})
+
 
 # FIX: the authenticated principal is part of the lookup, so a record
 # belonging to someone else is never loaded. A miss returns 404 rather than

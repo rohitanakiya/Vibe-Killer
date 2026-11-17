@@ -110,6 +110,22 @@ def add_cors(response):
 def health():
     return jsonify({"ok": True})
 
+# An ordinary "who am I" endpoint, which every API of this shape has and these
+# fixtures did not. It carries no weakness: it requires authentication and
+# returns the caller's own record.
+#
+# It is here because exposure.shared-trust-domain needs one. That check asks
+# whether a token minted for one declared component is accepted by another,
+# and it establishes that by finding an endpoint on the neighbour that refuses
+# an anonymous request -- deliberately from a short fixed list rather than by
+# discovery. With no such endpoint anywhere in the fixtures, the check could
+# run and could never find anything, which is how it sat for as long as it
+# existed.
+@app.route("/api/me", methods=["GET"])
+@require_auth
+def whoami():
+    return jsonify({"id": g.user["id"], "name": g.user["name"], "role": g.user["role"]})
+
 
 # VULN (idor.sequential-id-access): authenticated, then looks the order up by
 # the id in the URL with no ownership check.

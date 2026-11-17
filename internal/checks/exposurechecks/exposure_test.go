@@ -260,11 +260,16 @@ func TestNeighboursExcludesThePrimaryHoweverItIsWritten(t *testing.T) {
 }
 
 func TestOriginOf(t *testing.T) {
+	// localhost normalizes to 127.0.0.1 deliberately: this function's only
+	// job is deciding whether two declared targets are the same component,
+	// and the names for this machine do not distinguish one listener from
+	// itself. See TestLoopbackNamesAreOneComponent for what went wrong while
+	// they did.
 	tests := []struct{ in, want string }{
-		{"http://localhost:3000", "http://localhost:3000"},
-		{"http://localhost:3000/", "http://localhost:3000"},
-		{"http://LOCALHOST:3000/api", "http://localhost:3000"},
-		{"http://localhost", "http://localhost:80"},
+		{"http://localhost:3000", "http://127.0.0.1:3000"},
+		{"http://localhost:3000/", "http://127.0.0.1:3000"},
+		{"http://LOCALHOST:3000/api", "http://127.0.0.1:3000"},
+		{"http://localhost", "http://127.0.0.1:80"},
 		{"https://example.invalid", "https://example.invalid:443"},
 	}
 	for _, tc := range tests {
@@ -351,5 +356,49 @@ func TestRegisteredOnTheExposureLayer(t *testing.T) {
 	}
 	if c.Meta().Layer != check.LayerExposure {
 		t.Errorf("layer = %q, want exposure", c.Meta().Layer)
+	}
+}
+
+// One listener declared under two of this machine's names is one component.
+//
+// The shipped example config declares both http://127.0.0.1:5000 and
+// http://localhost:5000, and with hostnames compared literally the second was
+// a neighbour of the first. exposure.shared-trust-domain then reported that a
+// token minted for one component was accepted by another, about one process
+// reached by its other name -- a false positive on the configuration the
+// README hands people. It stayed latent only because no fixture had an
+// endpoint the check could get past its anonymous baseline on.
+func TestLoopbackNamesAreOneComponent(t *testing.T) {
+	for _, pair := range [][2]string{
+		{"http://127.0.0.1:5000", "http://localhost:5000"},
+		{"http://localhost:5000", "http://127.0.0.1:5000/"},
+		{"http://127.0.0.1:5000", "http://127.0.0.2:5000"},
+		{"http://localhost:5000", "http://app.localhost:5000"},
+	} {
+		a, err := originOf(pair[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := originOf(pair[1])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if a != b {
+			t.Errorf("originOf(%q) = %q and originOf(%q) = %q, want the same origin",
+				pair[0], a, pair[1], b)
+		}
+	}
+
+	// A different port is a different component, which is what a port is for.
+	a, _ := originOf("http://127.0.0.1:5000")
+	b, _ := originOf("http://localhost:3000")
+	if a == b {
+		t.Errorf("two ports collapsed onto one origin: %q", a)
+	}
+
+	// And a real host is left alone.
+	h, _ := originOf("https://api.example.invalid")
+	if h != "https://api.example.invalid:443" {
+		t.Errorf("originOf rewrote a real host: %q", h)
 	}
 }
