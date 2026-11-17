@@ -662,17 +662,21 @@ Keeping those weaknesses in the fixture rather than trimming them to fit is
 what made the gap measurable. All four report now, each pinned to a line in
 `rules/testdata/`.
 
-The endpoint checks are tested two ways, and the difference matters. Most of
-the suite points them at in-process `httptest` handlers, which is hermetic —
-no `npm install`, no ports — and proves the check's logic against this
-repository's own idea of how a vulnerable app answers. CI also runs `scripts/dynamic-check.sh`, once per stack and once per side,
-which installs that fixture's own pinned dependencies, starts it, and runs a
-real `--target` scan against it:
+The checks that need a running instance are tested two ways, and the
+difference matters. Most of the suite points them at in-process `httptest`
+handlers, which is hermetic — no `npm install`, no ports — and proves the
+check's logic against this repository's own idea of how a vulnerable app
+answers. CI also runs `scripts/dynamic-check.sh`, which installs a fixture's
+own pinned dependencies, starts it, and runs a real `--target` scan against
+it:
 
 ```
-flask     confirmed=7   patched: confirmed=0
-express   confirmed=6   patched: confirmed=0
-fastapi   confirmed=4   patched: confirmed=0
+flask     vulnerable  confirmed=8    patched  confirmed=0
+express   vulnerable  confirmed=6    patched  confirmed=0
+fastapi   vulnerable  confirmed=4    patched  confirmed=0
+
+flask     runtime     confirmed=10   (an agent attached, two observed findings)
+flask     exposure    confirmed=9    (two components, one trust domain)
 ```
 
 Findings reproduced against a live server — the IDOR naming the seeded canary
@@ -691,13 +695,28 @@ route extraction against a server rather than against a parser — FastAPI's
 `APIRouter` prefix resolution included, which until now had only ever been
 read.
 
+The last two lines are the runtime and exposure layers, and each had been
+worse off than merely untested. The runtime checks could not be reached at
+all: eligibility is decided before any check runs, the gate asks whether an
+observation has arrived, and an agent only reports once the application serves
+a request — so on an instance nobody was using they were skipped every time,
+however correctly the agent was installed. The exposure check needs two
+components and had never been given them; it spent every run timing out
+against a declared neighbour with nothing listening.
+
 Until these jobs existed, no test and no CI step had ever started a fixture.
-The dynamic layer was the part of this tool with the most confident language
-in its output and the least evidence behind it, and starting the fixtures
-found three things no amount of reading them would have: `fastapi-vulnerable`
-pinned a dependency set pip cannot resolve and an application that cannot
-import, `fastapi-patched` had never set the security headers its Flask and
-Express twins set, and `express-patched` has no lockfile where its twin does. The rule-pack behaviour test drives real
+These were the parts of the tool with the most confident language in their
+output and the least evidence behind them, and starting the fixtures found
+five things no amount of reading them would have: `fastapi-vulnerable` pinned
+a dependency set pip cannot resolve and an application that cannot import;
+`fastapi-patched` had never set the security headers its Flask and Express
+twins set; `express-patched` had no committed lockfile, and since osv-scanner
+reads lockfiles rather than `package.json`, that half of the pair contributed
+nothing at all to the dependency layer in a clean clone; the SQL differential
+check spent its probe budget on the first route it saw; and
+`exposure.shared-trust-domain` treated `localhost:5000` as a neighbour of
+`127.0.0.1:5000`, reporting one process as two components on the
+configuration this README hands you. The rule-pack behaviour test drives real
 Semgrep and skips cleanly when it is not installed; the pack's structure is
 validated without it.
 
